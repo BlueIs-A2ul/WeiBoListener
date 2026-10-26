@@ -5,16 +5,18 @@ import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import process from 'node:process';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { ConfigError, DEFAULT_CONFIG, getEnvConfig, normalizeConfig } from './config.js';
 import { createLogger } from './logger.js';
 import { isProcessAlive } from './lock.js';
+import { installAutostart, removeAutostart, resolveLayout } from './cli.js';
 import { sendWxPusher } from './notify.js';
 import { pollAll } from './poller.js';
 import { loadState } from './state.js';
 import { fetchApprovalPage, parseCookieExpiry } from './weibo.js';
+import { run } from './win.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -185,24 +187,11 @@ function assertMtime(expected, actual, label) {
 
 // ---------------------------------------------------------------- 进程与计划任务
 
-function decodeOutput(buffer) {
-  if (typeof buffer === 'string') return buffer.trim();
-  const bytes = buffer ?? Buffer.alloc(0);
-  try {
-    // schtasks / taskkill 的输出跟随系统控制台代码页（中文系统为 GBK），按 GBK 解码避免乱码。
-    return new TextDecoder(process.platform === 'win32' ? 'gbk' : 'utf-8').decode(bytes).trim();
-  } catch {
-    return Buffer.from(bytes).toString('utf8').trim();
-  }
-}
+/** exe + app/ 的打包结构，用于区分「开发时用 node 跑」和「双击 exe 跑」。 */
+export const PACKAGED = fs.existsSync(path.join(path.dirname(process.execPath), 'app', 'index.js'));
 
-function run(cmd, args, { timeout = 20000 } = {}) {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { windowsHide: true, timeout, encoding: 'buffer' }, (error, stdout, stderr) => {
-      const code = error ? (typeof error.code === 'number' ? error.code : 1) : 0;
-      resolve({ code, stdout: decodeOutput(stdout), stderr: decodeOutput(stderr) });
-    });
-  });
+function getTaskName() {
+  return process.env.WEIBO_TASK_NAME || TASK_NAME;
 }
 
 async function readLock(root) {
@@ -219,7 +208,7 @@ async function readLock(root) {
 
 async function getTaskInfo() {
   if (process.platform !== 'win32') return { installed: false, status: null, supported: false };
-  const queried = await run('schtasks', ['/Query', '/TN', TASK_NAME, '/FO', 'CSV', '/NH']);
+  const queried = await run('schtasks', ['/Query', '/TN', getTaskName(), '/FO', 'CSV', '/NH']);
   if (queried.code !== 0) return { installed: false, status: null, supported: true };
   const fields = queried.stdout.split('\n')[0].split('","').map((item) => item.replace(/^"|"$/g, ''));
   return { installed: true, status: fields[fields.length - 1] || null, supported: true };
@@ -262,6 +251,49 @@ export function restartListener({ root, force = false } = {}) {
   return task;
 }
 
+/**
+ * 没有计划任务时的重启方式：结束旧进程，再以「脱离当前控制台」的方式拉起新的 exe。
+ * 打包版（exe + app/）走这条路，用户不需要先装开机自启也能用面板改配置。
+ */
+async function restartDetached({ root, startedAt }) {
+  const lock = await readLock(root);
+  const oldPid = lock && lock.alive ? lock.pid : null;
+
+  if (oldPid) {
+    await run('taskkill', ['/PID', String(oldPid), '/T', '/F']);
+    const died = await waitFor(() => !isProcessAlive(oldPid), 8000);
+    if (!died) {
+      return { attempted: true, ok: false, oldPid, message: `无法结束旧进程（PID ${oldPid}），请手动重启监听。` };
+    }
+  }
+
+  try {
+    const child = spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+  } catch (err) {
+    return { attempted: true, ok: false, oldPid, message: `启动新进程失败：${err.message}` };
+  }
+
+  const newPid = await waitForNewPid(root, oldPid, 25000);
+  if (!newPid) {
+    return {
+      attempted: true,
+      ok: false,
+      oldPid,
+      message: '已尝试启动，但 25 秒内没有检测到新的监听进程，请查看 logs 目录。',
+    };
+  }
+
+  return {
+    attempted: true,
+    ok: true,
+    oldPid,
+    newPid,
+    elapsedMs: Date.now() - startedAt,
+    message: oldPid ? `已重启监听：PID ${oldPid} → ${newPid}` : `已启动监听：PID ${newPid}`,
+  };
+}
+
 async function performRestart({ root, force }) {
   const startedAt = Date.now();
   const task = await getTaskInfo();
@@ -269,6 +301,8 @@ async function performRestart({ root, force }) {
     return { attempted: false, ok: false, reason: 'unsupported', message: '当前系统不支持计划任务重启，请手动重启监听。' };
   }
   if (!task.installed) {
+    // 打包运行（exe + app/）时不需要依赖计划任务：直接拉起一个新的 exe 实例。
+    if (PACKAGED) return restartDetached({ root, startedAt });
     return {
       attempted: false,
       ok: false,
@@ -301,7 +335,7 @@ async function performRestart({ root, force }) {
   // 旧实例从 taskkill 到任务计划真正变为 Ready 有几十毫秒的间隔。
   // 如果此时立刻 /Run，Task Scheduler 可能仍然认为任务在运行，静默忽略本次启动。
   // 显式 /End 一次把任务状态推进到 Ready，再确认状态，然后带重试地 /Run。
-  await run('schtasks', ['/End', '/TN', TASK_NAME]);
+  await run('schtasks', ['/End', '/TN', getTaskName()]);
   await waitFor(
     async () => {
       const info = await getTaskInfo();
@@ -313,7 +347,7 @@ async function performRestart({ root, force }) {
   let newPid = null;
   let lastError = '';
   for (let attempt = 0; attempt < 3 && !newPid; attempt += 1) {
-    const started = await run('schtasks', ['/Run', '/TN', TASK_NAME]);
+    const started = await run('schtasks', ['/Run', '/TN', getTaskName()]);
     if (started.code !== 0) {
       lastError = started.stderr || started.stdout || '未知错误';
       await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -427,8 +461,9 @@ async function apiOverview(ctx) {
 
   return {
     ok: true,
+    packaged: PACKAGED,
     listener: { running: Boolean(lock?.alive), pid: lock?.pid ?? null },
-    task,
+    task: { ...task, name: getTaskName() },
     cookie: {
       configured: Boolean(envFile.env.cookie),
       expiresAt: expiry ? expiry.toISOString() : null,
@@ -455,7 +490,14 @@ async function apiOverview(ctx) {
 
 async function apiGetConfig(ctx) {
   const file = await readConfigFile(ctx.root);
-  return { ok: true, config: file.config, defaults: DEFAULT_CONFIG, mtimeMs: file.mtimeMs, exists: file.exists };
+  // 首次运行还没有 config.json：给面板一份默认值，用户加一条微博再保存即可生成。
+  return {
+    ok: true,
+    config: file.config ?? { ...DEFAULT_CONFIG },
+    defaults: DEFAULT_CONFIG,
+    mtimeMs: file.mtimeMs,
+    exists: file.exists,
+  };
 }
 
 async function apiSaveConfig(ctx, req) {
@@ -704,6 +746,18 @@ async function apiRestart(ctx) {
   return { ok: restart.ok, restart };
 }
 
+async function apiTaskInstall(ctx) {
+  const layout = resolveLayout({ execPath: process.execPath });
+  const result = await installAutostart({ layout, taskName: getTaskName() });
+  return { ok: result.ok, result };
+}
+
+async function apiTaskUninstall(ctx) {
+  const layout = resolveLayout({ execPath: process.execPath });
+  const result = await removeAutostart({ layout, taskName: getTaskName() });
+  return { ok: result.ok, result };
+}
+
 // ---------------------------------------------------------------- HTTP 基础设施
 
 function sendJson(res, status, payload) {
@@ -761,6 +815,8 @@ const ROUTES = {
   'POST /api/dry-run': (ctx) => apiDryRun(ctx),
   'GET /api/logs': (ctx, req, url) => apiLogs(ctx, url),
   'POST /api/restart': (ctx) => apiRestart(ctx),
+  'POST /api/task/install': (ctx) => apiTaskInstall(ctx),
+  'POST /api/task/uninstall': (ctx) => apiTaskUninstall(ctx),
 };
 
 export function createAdminServer({ root = DEFAULT_ROOT, token, htmlPath, autoRestart = true } = {}) {

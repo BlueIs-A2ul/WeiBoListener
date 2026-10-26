@@ -21,11 +21,14 @@ WeiBoListener/
 ├─ config.json           # 微博列表、轮询间隔、过滤规则
 ├─ .env                  # Cookie 和 WxPusher 密钥（不要提交/分享）
 ├─ .env.example          # 配置模板
-├─ start.bat             # Windows 启动脚本
-├─ admin.bat             # 打开本地配置面板
-├─ run-hidden.vbs        # 任务计划用隐藏启动器
-├─ install-task.ps1      # 注册开机自启
-├─ uninstall-task.ps1    # 删除开机自启
+├─ start.bat             # Windows 启动脚本（开发用）
+├─ admin.bat             # 打开本地配置面板（开发用）
+├─ run-hidden.vbs        # 任务计划用隐藏启动器（开发用）
+├─ install-task.ps1      # 注册开机自启（开发用）
+├─ uninstall-task.ps1    # 删除开机自启（开发用）
+├─ build.ps1             # 打包脚本：产出 dist/（exe + app/）
+├─ shell/launcher.cjs    # 打包版 exe 里的启动器（只负责加载 app/）
+├─ packaging/            # 打包用的模板文件（首次使用说明等）
 ├─ src/                  # 程序代码
 ├─ test/                 # 单元测试
 ├─ data/state.json       # 运行后自动生成，保存已见评论
@@ -178,7 +181,59 @@ npm run admin          # 或直接双击 admin.bat
 
 安全边界：只监听 `127.0.0.1`、校验 Host/Origin、除首页外都要令牌；Cookie 与 Token **不会回传浏览器**（只显示尾部 6 位和长度），要换就得整段粘贴新的。
 
-## Windows 开机自启
+## 打包成 exe（给不装 Node 的人用）
+
+```powershell
+.\build.ps1                 # 跑测试 → 组装 dist\ → 首次会构建 exe
+.\build.ps1 -RebuildExe     # 强制重建 exe（只在改启动器 / 换 Node 版本时需要）
+```
+
+产出：
+
+```text
+dist/
+├─ WeiBoListener.exe     壳（约 81 MB，压缩后 32 MB）
+├─ app/                  业务代码（17 个文件，约 150 KB）
+├─ .env.example          配置模板
+└─ 首次使用.txt           给用户的说明
+```
+
+这是「壳 + 外部代码」结构，好处是**日常更新不用重新打包，也不用重下 80 MB**：
+
+| 改了什么 | 要做什么 |
+|---|---|
+| Cookie / 轮询间隔 / 关键词 / 微博列表 | 都不用，面板里改就行 |
+| 业务代码（`src/*.js`） | `.\build.ps1` 刷新 `dist\app\`，然后只把 `app/` 覆盖给用户（约 150 KB） |
+| 启动器 `shell/launcher.cjs`、Node 版本 | `-RebuildExe` 重建 exe |
+
+用户拿到的文件夹里，双击 `WeiBoListener.exe` 即可：
+
+| 命令 | 作用 |
+|---|---|
+| 双击 / 无参数 | 启动监听；没配置过会自动打开配置面板 |
+| `--admin` | 打开配置面板 |
+| `--install` | 安装开机自启（登录 Windows 后自动运行） |
+| `--uninstall` | 取消开机自启 |
+| `--status` | 查看进程、Cookie、config.json、开机自启状态 |
+| `--once` / `--dry-run` / `--test-push` | 与开发版一致 |
+
+`--install` 实际做的事：
+
+1. 在 exe 旁边生成 `run-hidden.vbs`（UTF-16 + CRLF，隐藏窗口启动，并让任务保持「正在运行」）；启动参数带 `--background`，配置不全时只写 `logs/startup.log`、不会弹浏览器
+2. 用任务计划 XML 注册任务 `WeiBoListener`：登录时触发、失败后每 1 分钟重试（最多 999 次）、不允许多实例、不限运行时长
+3. 面板「诊断」页也有「安装 / 取消开机自启」按钮，走的是同一套逻辑
+
+打包版和开发版的区别只有工作目录：
+
+- 打包版：配置、`data/`、`logs/` 都在 exe 所在目录（**整个文件夹一起移动**）
+- 开发版：都在项目根目录
+
+两点注意：
+
+- exe 没有代码签名，Windows 首次运行可能提示「已保护你的电脑」，点「更多信息 → 仍要运行」即可。
+- 打包版的 `--install` 会覆盖同名的旧任务。如果你之前用 `install-task.ps1`（指向 `run-hidden.vbs`），装完就切到 exe 版了，旧的 `start.bat` 链路不再被调用。
+
+## Windows 开机自启（开发版）
 
 ### 方式 A：任务计划程序（最简单）
 
@@ -279,7 +334,7 @@ Cookie 是账号凭证，**不要提交到 Git、不要发给别人、不要贴�
 npm test
 ```
 
-当前包含 97 个单元测试，覆盖：
+当前包含 123 个单元测试，覆盖：
 
 - 评论去重、延迟出现的旧评论、翻页
 - HTML 清洗、时间格式化、消息分块
@@ -291,6 +346,7 @@ npm test
 - 告警语义：心跳如实报数、连续失败阈值与去重窗口、Cookie 临期预警、启动失败告警
 - 环境变量加载：引号处理、同名系统变量优先并报告冲突
 - 配置面板：密钥掩码、令牌校验、端口顺延、配置校验与并发修改检测
+- 打包与自启：任务计划 XML（元素顺序、失败重试、路径转义）、`--install/--status` 参数解析、首次运行判定、SEA 的 argv 归一化
 
 ## 常见问题
 

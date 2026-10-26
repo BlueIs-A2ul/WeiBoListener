@@ -1,0 +1,43 @@
+WeiBoListener 首次使用
+=====================
+
+一、准备（只需要做一次）
+  1. 双击 WeiBoListener.exe
+     如果还没配置过，它会自动打开浏览器里的配置面板，并在窗口里打印地址。
+  2. 在「凭据」页填入：
+     - 微博 Cookie：浏览器登录微博 → F12 → Network → 找 approval/list 请求 →
+       复制请求头里整行 Cookie 粘贴进去
+     - WxPusher AppToken / UID：https://wxpusher.zjiecode.com/ 扫码登录 →
+       创建应用拿 AppToken → 关注公众号后在「我的」里复制 UID
+     填完点「保存凭据」，可以顺手点「发送测试推送」确认手机能收到。
+  3. 在「微博与轮询」页添加要监听的微博：
+     - 微博 ID 是那串纯数字（例如 https://weibo.com/1234567890/AbCdEf 里的 1234567890）
+     - 填完点「保存配置」
+
+二、设置开机自启
+  执行一次：
+      WeiBoListener.exe --install
+  或者在配置面板「诊断」页点「安装开机自启」。
+  之后登录 Windows 会自动在后台启动，不需要手动开。
+
+三、日常使用
+  - 查看状态：WeiBoListener.exe --status
+  - 打开面板：WeiBoListener.exe --admin
+  - 取消自启：WeiBoListener.exe --uninstall
+  - 日志在 logs 目录，状态在 data 目录
+
+四、常见问题
+  Q: 双击后闪一下就没了？
+  A: 说明配置齐全、它已经在后台跑起来了。用 --status 看进程，或打开面板看「健康度」。
+  Q: 手机收不到推送？
+  A: 面板「凭据」页点「发送测试推送」，按提示检查 WxPusher 的 AppToken/UID。
+  Q: Cookie 过期了？
+  A: 程序会提前 7 天推送提醒。重新复制 Cookie，面板里「替换 Cookie」保存即可。
+  Q: 只想要单文件 exe？
+  A: 这个版本是「exe + app 文件夹」，更新时只替换 app 里的文件，不用重新下载 32MB。
+     移动时请把整个文件夹一起移动，不要只拿 exe。
+
+更新说明
+========
+把新的 app 文件夹替换掉旧的即可（先退出监听：任务管理器结束 WeiBoListener.exe）。
+exe 本身只有换 Node 版本或改启动器时才需要替换。

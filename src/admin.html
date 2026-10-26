@@ -340,7 +340,10 @@
           <div class="actions" style="margin-bottom:0">
             <button class="btn" id="dryRun">开始试跑</button>
             <button class="btn ghost" id="restartNow">手动重启监听</button>
+            <button class="btn ghost" id="installAuto">安装开机自启</button>
+            <button class="btn ghost" id="uninstallAuto">取消开机自启</button>
           </div>
+          <p class="hint" id="autoHint"></p>
           <div id="dryRunResult"></div>
         </div>
 
@@ -514,9 +517,21 @@
       ['最近推送', fmtTime(overview.state?.lastPushAt)],
       ['暂停/退避', overview.state?.authPausedUntil ? `Cookie 失效暂停至 ${fmtTime(overview.state.authPausedUntil)}`
         : overview.state?.backoffUntil ? `限流退避至 ${fmtTime(overview.state.backoffUntil)}` : '无'],
+      ['运行方式', overview.packaged ? '打包版（exe + app/）' : '开发版（node src/）'],
       ['配置错误', overview.configError || '无'],
     ];
     info.replaceChildren(...items.flatMap(([key, value]) => [h('dt', { text: key }), h('dd', { text: value })]));
+
+    const autoHint = $('#autoHint');
+    if (autoHint) {
+      if (!overview.packaged) {
+        autoHint.textContent = '开发模式：开机自启用 install-task.ps1 管理；打包版（exe）才能在这里一键安装。';
+      } else if (overview.task.installed) {
+        autoHint.textContent = `已安装开机自启（任务名 ${overview.task.name || 'WeiBoListener'}），登录 Windows 后自动在后台运行。`;
+      } else {
+        autoHint.textContent = '还没安装开机自启：现在只有手动双击 exe 才会运行。';
+      }
+    }
 
     const postStates = $('#postStates');
     if (posts.length > 0) {
@@ -856,6 +871,36 @@
     }
   }
 
+  async function installAuto(event) {
+    const button = event.currentTarget;
+    setBusy(button, true, '安装中…');
+    try {
+      const result = await api('/api/task/install', { method: 'POST', body: {} });
+      showBanner(result.result.message, result.ok ? 'ok' : 'warn');
+      toast(result.result.message, result.ok ? 'ok' : 'warn');
+      await loadOverview();
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function uninstallAuto(event) {
+    const button = event.currentTarget;
+    setBusy(button, true, '取消中…');
+    try {
+      const result = await api('/api/task/uninstall', { method: 'POST', body: {} });
+      showBanner(result.result.message, result.ok ? 'ok' : 'warn');
+      toast(result.result.message, result.ok ? 'ok' : 'warn');
+      await loadOverview();
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
   async function loadLogs() {
     try {
       const result = await api('/api/logs?tail=100');
@@ -897,6 +942,8 @@
     $('#testPush').addEventListener('click', runTestPush);
     $('#dryRun').addEventListener('click', runDryRun);
     $('#restartNow').addEventListener('click', restartNow);
+    $('#installAuto').addEventListener('click', installAuto);
+    $('#uninstallAuto').addEventListener('click', uninstallAuto);
     $('#reloadLogs').addEventListener('click', loadLogs);
     $('#addPost').addEventListener('click', () => {
       const container = $('#posts');
