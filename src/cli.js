@@ -332,3 +332,17 @@ export async function run(argv = process.argv.slice(1)) {
   await import(pathToFileURL(layout.listenerEntry).href);
   return 0;
 }
+
+// 开发时可以直接 node src/cli.js --status / --install 试启动器逻辑；
+// 打包后由 shell/launcher.cjs 调用 run()，这里的判断为 false，不会重复执行。
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  run()
+    .then((code) => {
+      if (typeof code === 'number') process.exitCode = code;
+    })
+    .catch((err) => {
+      console.error(`启动失败：${err?.stack || err?.message || err}`);
+      process.exitCode = 1;
+    });
+}
