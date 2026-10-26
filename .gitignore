@@ -1,0 +1,16 @@
+.env
+data/
+logs/
+node_modules/
+*.log
+*.tmp
+
+# 本地接口笔记与抓包样本（含 Cookie、真实评论内容，勿入库）
+接口信息.txt
+响应.json
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

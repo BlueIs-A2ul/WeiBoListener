@@ -1,0 +1,17 @@
+{
+  "name": "weibo-listener",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "监听微博待审评论并通过 WxPusher 推送到手机",
+  "scripts": {
+    "start": "node src/index.js",
+    "once": "node src/index.js --once",
+    "dry": "node src/index.js --dry-run --once",
+    "test-push": "node src/index.js --test-push",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20.12"
+  }
+}
