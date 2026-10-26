@@ -9,6 +9,7 @@
     "once": "node src/index.js --once",
     "dry": "node src/index.js --dry-run --once",
     "test-push": "node src/index.js --test-push",
+    "admin": "node src/admin.js",
     "test": "node --test"
   },
   "engines": {

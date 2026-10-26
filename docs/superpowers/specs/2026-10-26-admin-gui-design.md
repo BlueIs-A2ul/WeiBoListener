@@ -73,6 +73,7 @@ src/admin.js  ── 复用 ──▶ src/config.js  (normalizeConfig / getEnvCo
 - 除 `GET /` 外，所有 API 都要校验 token（`crypto.timingSafeEqual`），失败返回 401。
 - 额外校验 `Host` 头必须是 `127.0.0.1:<port>` 或 `localhost:<port>`，`Origin` 若存在必须与 Host 同源，防 DNS rebinding 与跨站提交。
 - token 缺失或错误时，页面只显示"请用启动时控制台打印的完整链接打开（含 `#t=`）"，不渲染任何配置。
+- Windows 下 `schtasks` / `taskkill` 的输出按系统控制台代码页（中文系统为 GBK）解码，用 `new TextDecoder('gbk')`，避免状态文案乱码。
 - 安全响应头：`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`。
 
 ## 6. HTTP 接口
@@ -84,14 +85,14 @@ src/admin.js  ── 复用 ──▶ src/config.js  (normalizeConfig / getEnvCo
 | `GET /` | 返回 `admin.html` | 唯一不需要 token 的端点 |
 | `GET /api/overview` | 状态条数据 | 监听进程存活（读 `data/.lock` 的 PID 再探活，不依赖本地化文本）、计划任务是否安装、`state.json` 摘要、Cookie 过期时间 |
 | `GET /api/config` | 读取业务配置 | 返回 `config.json` 当前值 + `DEFAULT_CONFIG` |
-| `POST /api/config` | 保存业务配置 | 先 `normalizeConfig()`，通过后原子写 `config.json` |
+| `POST /api/config` | 保存业务配置 | 先 `normalizeConfig()`，通过后原子写 `config.json`，随后自动重启监听 |
 | `GET /api/credentials` | 凭据**脱敏**视图 | Cookie 与 Token 只返回 `{ configured, tail, length, expiresAt }`，绝不返回原值；UID 属于标识而非密钥，完整返回以便直接编辑 |
-| `POST /api/credentials` | 更新凭据 | 只接收用户主动粘贴的新值；空字符串表示"保持不变" |
+| `POST /api/credentials` | 更新凭据 | 只接收用户主动粘贴的新值；空字符串表示"保持不变"；写盘后自动重启监听 |
 | `POST /api/test-push` | 发送 WxPusher 测试消息 | 直接用当前 `.env` 中的值，不改文件 |
 | `POST /api/test-fetch` | 拉取一页待审评论 | 验证 Cookie 是否有效，返回每篇微博的 `total` 与耗时 |
 | `POST /api/dry-run` | 试跑一轮 | `pollAll({ dryRun: true })`，不写状态、不发消息；用一个收集型 logger 包装 `createLogger()` 的四个方法，把日志同时写入当日日志文件并收集到响应里 |
 | `GET /api/logs?tail=100` | 今日日志尾部 | 读取 `logs/app-<今天>.log` 最后 N 行（上限 500） |
-| `POST /api/restart` | 重启监听任务 | `schtasks /End` + `schtasks /Run`，任务名 `WeiBoListener`；未安装则返回 409 |
+| `POST /api/restart` | 手动重启监听 | 按锁文件 PID 结束进程 → 等任务回到 Ready → `schtasks /Run`（带重试），流程见第 8 节；未安装时返回 200 且 `restart.ok=false` |
 
 ## 7. 页面结构
 
@@ -105,16 +106,24 @@ src/admin.js  ── 复用 ──▶ src/config.js  (normalizeConfig / getEnvCo
 
 **诊断页**：状态文件摘要（是否已建基线、lastPollAt、lastError）、今日日志尾部 100 行（等宽、可复制）、**试跑一轮**按钮（结果以表格列出每篇微博的新评论数与是否 dry-run）。
 
-保存成功后顶部出现持久横幅：**"已保存，需重启监听才生效"**（并注明改的是 `.env` 还是 `config.json`）+ **"立即重启"** 按钮（点击后二次确认）。
+保存成功后顶部横幅显示 **"已保存 config.json · 已重启监听：PID 1234 → 5678"**；重启失败时横幅转为告警色并给出原因。凭据页保存按钮文案为"保存并重启…"，卡片上注明"若开启了启动通知，会额外收到一条推送"。
 
-## 8. 生效方式（决策：方案 a）
+## 8. 生效方式：保存后自动重启（已定）
 
-`index.js` 只在启动时读取一次配置，因此面板保存后不会影响正在运行的进程。本设计采用**提示 + 一键重启**：
+`index.js` 只在启动时读取一次配置，所以面板保存不会影响正在运行的进程。最终实现为**保存后自动重启**，用户不需要额外确认：
 
-- 保存成功后横幅提示需要重启，提供"立即重启"按钮；
-- 按钮执行 `schtasks /End /TN WeiBoListener` 后 `schtasks /Run /TN WeiBoListener`，等待 2 秒后用 `data/.lock` 的 PID 探活确认新进程已起来；
-- 任务状态一律以"锁文件 PID 是否存活"为运行时判据，`schtasks` 输出只用于判断"是否安装"和尽力解析，避免中文/英文系统下状态文本不同导致误判；
-- 任务未安装（`schtasks` 返回非零）时按钮置灰，横幅改为提示"当前未安装计划任务，请手动重启监听进程"。
+- `POST /api/config` 与 `POST /api/credentials` 成功后立即触发重启；
+- 重启顺序（顺序不能换）：
+  1. 读 `data/.lock` 拿真实 PID 并探活；不在运行则**跳过**重启，只回"配置已保存，监听未运行"（避免用户没想启动却被动拉起）；
+  2. `taskkill /PID <pid> /T /F` 结束真实 node 进程。任务链是 `wscript → cmd → node`，`schtasks /End` 只能杀掉 wscript、杀不掉 node（已实测）；
+  3. `schtasks /End` 把任务状态推进到 Ready，再轮询到状态不再是"正在运行"（最多 6 秒）。**缺少这一步时，紧接着的 /Run 会被 Task Scheduler 静默忽略**（返回 0 却不启动），这是第一版失败的真实原因；
+  4. `schtasks /Run` 最多重试 3 次，每次最多等 10 秒，用"锁文件出现新 PID 且进程存活"确认启动成功；
+- 返回结构 `{ attempted, ok, oldPid, newPid, elapsedMs, message }`，页面横幅直接展示 message；
+- 任务未安装时不做任何重启动作，只提示手动重启；
+- 重启会中断当前轮询；若 `notifyOnStart` 开启，新进程会额外推送一条启动通知（界面已注明）；
+- `--no-restart` 可关闭自动重启，便于调试；测试里也用它保证不会误动真实计划任务。
+
+实测：连续两次保存分别在 1.0s / 1.45s 内完成重启，PID 正确切换且监听恢复轮询。
 
 **热加载列为后续可选**（不属于本次范围）：在 `index.js` 主循环每轮前重读 `config.json`，解析失败时沿用上一份并记 `warn` 日志。它需要改动监听器主循环，须单独评估。
 
@@ -125,7 +134,7 @@ src/admin.js  ── 复用 ──▶ src/config.js  (normalizeConfig / getEnvCo
 1. 按行读取，识别 `KEY=VALUE` 行（`#` 开头为注释，原样保留）；
 2. 只替换 `WEIBO_COOKIE`、`WXPUSHER_APP_TOKEN`、`WXPUSHER_UIDS`、`LOG_LEVEL` 四个键的**值**部分，位置不变；
 3. 文件中缺失的键追加到末尾（值前带一行注释说明来源）；
-4. 值包含空格、`#`、引号时用双引号包裹并转义；
+4. 只有会被解析器误读的值（首尾空白、`#`、引号、反斜杠、换行）才用双引号包裹并转义；Cookie 这类含普通空格的值保持无引号，与手写 `.env` 风格一致；
 5. 写前把原文件复制为 `.env.bak`，再写 `.env.tmp` 并 `rename` 覆盖（与 `saveState` 相同策略）。
 
 **`config.json`**：`JSON.stringify(normalizeConfig(input), null, 2) + '\n'`，同样先备份 `config.json.bak` 再原子写。
@@ -144,8 +153,9 @@ src/admin.js  ── 复用 ──▶ src/config.js  (normalizeConfig / getEnvCo
 
 `test/admin.test.js`，沿用 `node --test`：
 
-- 纯函数：`.env` 合并（保留注释/顺序、只改指定键、缺失键追加、含空格与引号的值正确转义）；脱敏函数（不返回原值、尾部与长度正确）；`maskSecret` 对短值不泄露。
-- HTTP（`server.listen(0)` + 临时目录）：无 token → 401；错误 token → 401；`GET /` 无需 token；`POST /api/config` 非法 JSON → 400 且文件未变；合法 → 200 且文件内容等于归一化结果；`GET /api/credentials` 响应体中不含 Cookie 原文。
+- 纯函数：`.env` 合并（保留注释/顺序、只改指定键、缺失键追加、只在必要时加引号并转义）；`parseEnvText` 忽略注释；`maskSecret` 对短值不泄露原内容；`isAllowedHost` 只放行回环地址。
+- HTTP（`server.listen(0)` + 临时目录 + `autoRestart: false`）：无 token → 401；错误 token → 401；`GET /` 无需 token；`POST /api/config` 非法内容 → 400 且文件字节不变；合法 → 200 且落盘内容等于归一化结果；过期 mtime → 409；`GET /api/credentials` 响应体中不含 Cookie 原文；`POST /api/credentials` 保留 `.env` 注释并拒绝过短 Cookie；`/api/restart` 在关闭自动重启时安全返回。
+- 页面：抽取 `admin.html` 的内联脚本做 `new Function()` 语法校验。这条测试是补出来的——第一版页面因为一个三元表达式少写冒号，脚本整体不执行、页面停在空白状态，单靠接口测试发现不了。
 
 ## 12. 风险
 
@@ -156,3 +166,6 @@ src/admin.js  ── 复用 ──▶ src/config.js  (normalizeConfig / getEnvCo
 | 并发写 `config.json`（用户同时手改文件） | 写入前重读并比对 mtime，不一致则提示"文件已被外部修改，请刷新后重试" |
 | 端口被占用 | 明确报错并提示 `--port` |
 | `schtasks` 需要权限 | 失败即回显 stderr，并降级为纯提示 |
+| 重启竞态：杀进程后任务尚未回到 Ready，`/Run` 被静默忽略 | 先 `/End` 并轮询状态到非运行，再带重试 `/Run`；实测连续重启稳定在 1–1.5 秒 |
+| 保存会触发一次启动推送（`notifyOnStart`） | 界面卡片明确注明；如需静默可在 `config.json` 关闭启动通知 |
+| 页面脚本语法错误导致白屏 | 单元测试直接校验内联脚本可编译 |

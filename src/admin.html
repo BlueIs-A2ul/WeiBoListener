@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>微博监听 · 控制台</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f2ee;
+    --surface: #ffffff;
+    --surface-2: #faf9f6;
+    --text: #1f1d1a;
+    --muted: #6f6a62;
+    --line: #e2ddd4;
+    --accent: #d9480f;
+    --accent-soft: #fdece3;
+    --ok: #2b8a3e;
+    --ok-soft: #e6f4ea;
+    --warn: #b7791f;
+    --warn-soft: #fdf3e0;
+    --danger: #c92a2a;
+    --danger-soft: #fde8e8;
+    --radius: 14px;
+    --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614;
+      --surface: #201f1c;
+      --surface-2: #262521;
+      --text: #ece7df;
+      --muted: #a09a90;
+      --line: #35322d;
+      --accent: #ff7a45;
+      --accent-soft: #3a231a;
+      --ok: #51cf66;
+      --ok-soft: #1d2f22;
+      --warn: #f0b429;
+      --warn-soft: #33280f;
+      --danger: #ff6b6b;
+      --danger-soft: #3a1d1d;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding-bottom: 48px;
+  }
+  .wrap { max-width: 1020px; margin: 0 auto; padding: 0 20px; }
+
+  header.top { padding: 28px 0 14px; }
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .brand h1 { font-size: 20px; margin: 0; letter-spacing: .01em; }
+  .brand .sub { color: var(--muted); font-size: 13px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 11px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--line);
+    font-size: 13px; color: var(--muted);
+  }
+  .chip b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .dot.danger { background: var(--danger); }
+
+  nav.tabs { display: flex; gap: 4px; margin: 18px 0 0; border-bottom: 1px solid var(--line); }
+  .tab {
+    appearance: none; border: 0; background: none; cursor: pointer;
+    padding: 10px 14px; font: inherit; font-size: 14px; color: var(--muted);
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--text); }
+  .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  main { padding-top: 20px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 18px 20px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 4px; }
+  .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 2px 0 0; }
+  .muted { color: var(--muted); font-size: 12.5px; }
+
+  .statusline { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; font-size: 13.5px; }
+  .badge {
+    font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--surface-2);
+    border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+  }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+  .badge.danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+
+  label.field { display: block; font-size: 13px; color: var(--muted); }
+  label.field input, label.field select, textarea, input[type="text"], input[type="number"] {
+    width: 100%; margin-top: 6px; font: inherit; font-size: 14px; color: var(--text);
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px;
+  }
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
+  textarea { resize: vertical; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-top: 14px; }
+  .grid.two { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+
+  .btn {
+    appearance: none; cursor: pointer; font: inherit; font-size: 14px;
+    padding: 9px 16px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--text); transition: .12s ease;
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn.ghost { background: transparent; }
+  .btn.small { padding: 5px 10px; font-size: 12.5px; border-radius: 8px; }
+  .btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); background: transparent; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 16px 0 8px; }
+
+  .post-row { display: grid; grid-template-columns: 1.2fr 1fr auto auto; gap: 10px; align-items: end; padding: 12px 0; border-top: 1px solid var(--line); }
+  .post-row:first-child { border-top: 0; }
+  .post-row .mono { font-family: var(--mono); font-size: 13px; }
+  .switch { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); padding-bottom: 9px; }
+  .switch input { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
+
+  .banner {
+    display: flex; gap: 10px; align-items: flex-start; justify-content: space-between;
+    margin-top: 16px; padding: 11px 14px; border-radius: 10px; font-size: 13.5px;
+    background: var(--ok-soft); color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 25%, transparent);
+  }
+  .banner.warn { background: var(--warn-soft); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+  .banner.error { background: var(--danger-soft); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 25%, transparent); }
+  .banner button { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; opacity: .7; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: none; }
+  td.mono, .mono { font-family: var(--mono); font-size: 12.5px; }
+  pre.logs {
+    margin: 12px 0 0; padding: 14px; border-radius: 10px; background: #1c1b19; color: #ded8ce;
+    font-family: var(--mono); font-size: 12px; line-height: 1.55; max-height: 380px; overflow: auto;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 8px 14px; margin-top: 12px; font-size: 13.5px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+  .gate { max-width: 520px; margin: 80px auto; text-align: center; }
+  .gate h2 { font-size: 18px; }
+  .gate p { color: var(--muted); font-size: 14px; }
+  .gate code { font-family: var(--mono); background: var(--surface-2); padding: 2px 6px; border-radius: 5px; }
+
+  .toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+  .toast {
+    background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--muted);
+    border-radius: 10px; padding: 11px 14px; font-size: 13.5px; box-shadow: 0 8px 24px rgba(0,0,0,.12);
+    max-width: 380px; animation: slide .18s ease;
+  }
+  .toast.ok { border-left-color: var(--ok); }
+  .toast.warn { border-left-color: var(--warn); }
+  .toast.error { border-left-color: var(--danger); }
+  @keyframes slide { from { opacity: 0; transform: translateY(6px); } }
+
+  footer { color: var(--muted); font-size: 12px; margin-top: 26px; }
+  @media (max-width: 640px) {
+    .post-row { grid-template-columns: 1fr 1fr; }
+    .post-row .switch { padding-bottom: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>微博监听</h1>
+      <span class="sub">本地配置控制台</span>
+    </div>
+    <div class="chips" id="chips"></div>
+  </header>
+
+  <div id="gate" class="gate" hidden>
+    <h2>缺少访问令牌</h2>
+    <p>请使用控制台启动时终端打印的完整链接打开本页（地址形如 <code>http://127.0.0.1:8787/#t=…</code>）。</p>
+  </div>
+
+  <div id="app" hidden>
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="creds" aria-selected="true">凭据</button>
+      <button class="tab" role="tab" data-tab="config" aria-selected="false">微博与轮询</button>
+      <button class="tab" role="tab" data-tab="diag" aria-selected="false">诊断</button>
+    </nav>
+
+    <div id="banner" class="banner" hidden></div>
+
+    <main>
+      <!-- 凭据 -->
+      <section class="panel active" data-panel="creds">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>微博 Cookie</h2>
+              <p class="hint">从浏览器开发者工具 Network 面板复制整行 Cookie。保存时会整段替换，界面上不会回显原值。</p>
+            </div>
+            <span class="badge" id="cookieBadge"></span>
+          </div>
+          <div class="statusline" id="cookieStatus"></div>
+          <div id="cookieEditor" hidden style="margin-top:12px">
+            <textarea id="cookieInput" rows="4" spellcheck="false" placeholder="粘贴新的 Cookie（整段替换）"></textarea>
+          </div>
+          <div class="card-actions actions" style="margin-bottom:0">
+            <button class="btn ghost small" id="cookieToggle">替换 Cookie</button>
+            <span class="muted">保存后自动重启监听；若开启了启动通知，会额外收到一条推送</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>WxPusher AppToken</h2>
+              <p class="hint">在 wxpusher.zjiecode.com 创建应用后获得，以 AT_ 开头。</p>
+            </div>
+            <span class="badge" id="tokenBadge"></span>
+          </div>
+          <div class="statusline" id="tokenStatus"></div>
+          <div id="tokenEditor" hidden style="margin-top:12px">
+            <input type="text" id="tokenInput" spellcheck="false" placeholder="粘贴新的 AppToken">
+          </div>
+          <div class="actions" style="margin-bottom:0">
+            <button class="btn ghost small" id="tokenToggle">替换 Token</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>接收用户与日志</h2>
+          <div class="grid two">
+            <label class="field">WxPusher 用户 UID
+              <input type="text" id="uidsInput" spellcheck="false" placeholder="UID_xxx, UID_yyy">
+            </label>
+            <label class="field">日志级别
+              <select id="logLevelSelect">
+                <option value="debug">debug</option>
+                <option value="info">info</option>
+                <option value="warn">warn</option>
+                <option value="error">error</option>
+              </select>
+            </label>
+          </div>
+          <p class="hint" style="margin-top:10px">多个 UID 用英文逗号分隔。</p>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary" id="saveCreds">保存凭据</button>
+          <button class="btn" id="testFetch">测试抓取</button>
+          <button class="btn" id="testPush">发送测试推送</button>
+        </div>
+        <div id="credResult"></div>
+      </section>
+
+      <!-- 配置 -->
+      <section class="panel" data-panel="config">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>监控的微博</h2>
+              <p class="hint">ID 是微博接口里的纯数字串，例如 <span class="mono">1234567890123456</span>。填错的话「测试抓取」会直接报错。</p>
+            </div>
+            <button class="btn ghost small" id="addPost">+ 添加</button>
+          </div>
+          <div id="posts"></div>
+        </div>
+
+        <div class="card">
+          <h2>轮询与推送</h2>
+          <div class="grid">
+            <label class="field">轮询间隔（秒）<input type="number" id="pollIntervalSec" min="30"></label>
+            <label class="field">随机抖动（秒）<input type="number" id="jitterSec" min="0"></label>
+            <label class="field">请求超时（毫秒）<input type="number" id="requestTimeoutMs" min="5000" max="120000"></label>
+            <label class="field">单条评论字符上限<input type="number" id="maxCommentChars" min="50" max="1000"></label>
+            <label class="field">深度扫描间隔（小时）<input type="number" id="deepScanIntervalHours" min="0"></label>
+            <label class="field">深度扫描最大页数<input type="number" id="deepScanMaxPages" min="1" max="100"></label>
+            <label class="field">基线最大页数<input type="number" id="baselineMaxPages" min="1" max="100"></label>
+            <label class="field">单条微博记忆上限<input type="number" id="maxSeenPerPost" min="1000" max="1000000"></label>
+          </div>
+          <div class="grid two" style="margin-top:16px">
+            <label class="switch" style="padding-bottom:0">
+              <input type="checkbox" id="heartbeatEnabled"> 每日心跳
+            </label>
+            <label class="field">心跳时间（0-23 点）<input type="number" id="heartbeatHour" min="0" max="23"></label>
+          </div>
+          <div class="grid two" style="margin-top:14px">
+            <label class="switch" style="padding-bottom:0">
+              <input type="checkbox" id="notifyOnStart"> 启动时推送通知
+            </label>
+            <label class="field">配置文件日志级别
+              <select id="configLogLevel">
+                <option value="debug">debug</option>
+                <option value="info">info</option>
+                <option value="warn">warn</option>
+                <option value="error">error</option>
+              </select>
+            </label>
+          </div>
+          <label class="field" style="margin-top:16px">排除关键词（每行一个，命中则忽略该评论）
+            <textarea id="excludeKeywords" rows="3" spellcheck="false" placeholder="广告&#10;抽奖"></textarea>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary" id="saveConfig">保存配置</button>
+          <span class="muted">保存后自动重启监听生效</span>
+        </div>
+      </section>
+
+      <!-- 诊断 -->
+      <section class="panel" data-panel="diag">
+        <div class="card">
+          <h2>运行状态</h2>
+          <dl class="kv" id="diagInfo"></dl>
+          <div id="postStates"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>试跑一轮</h2>
+              <p class="hint">使用当前 Cookie 真实请求：不会写状态、不会推送消息，只显示会发生什么。</p>
+            </div>
+          </div>
+          <div class="actions" style="margin-bottom:0">
+            <button class="btn" id="dryRun">开始试跑</button>
+            <button class="btn ghost" id="restartNow">手动重启监听</button>
+          </div>
+          <div id="dryRunResult"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>日志</h2>
+              <p class="hint" id="logFileHint">最近 100 行</p>
+            </div>
+            <button class="btn ghost small" id="reloadLogs">刷新</button>
+          </div>
+          <pre class="logs" id="logs">加载中…</pre>
+        </div>
+      </section>
+    </main>
+
+    <footer id="footer"></footer>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  const TOKEN_KEY = 'weibo-admin-token';
+  const $ = (selector, scope = document) => scope.querySelector(selector);
+  const $$ = (selector, scope = document) => Array.from(scope.querySelectorAll(selector));
+
+  const state = {
+    token: '',
+    config: null,
+    configMtime: null,
+    creds: null,
+    overview: null,
+    pendingCookie: '',
+    pendingToken: '',
+    busy: new Set(),
+  };
+
+  function h(tag, attrs = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value === null || value === undefined || value === false) continue;
+      if (key === 'class') node.className = value;
+      else if (key === 'text') node.textContent = value;
+      else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2), value);
+      else if (value === true) node.setAttribute(key, '');
+      else node.setAttribute(key, value);
+    }
+    for (const child of children.flat(Infinity)) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+
+  function toast(message, tone = 'ok') {
+    const node = h('div', { class: `toast ${tone}`, text: message });
+    $('#toasts').append(node);
+    setTimeout(() => node.remove(), 5200);
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return String(iso);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  async function api(path, { method = 'GET', body } = {}) {
+    const headers = { 'x-admin-token': state.token };
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    const response = await fetch(path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    let data = null;
+    try { data = await response.json(); } catch { data = null; }
+    if (!response.ok || (data && data.ok === false)) {
+      const message = data && data.error && data.error.message ? data.error.message : `请求失败（HTTP ${response.status}）`;
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  }
+
+  function setBusy(button, busy, label) {
+    if (!button) return;
+    if (busy) {
+      button.dataset.label = button.textContent;
+      button.disabled = true;
+      button.textContent = label || '处理中…';
+    } else {
+      button.disabled = false;
+      if (button.dataset.label) button.textContent = button.dataset.label;
+    }
+  }
+
+  // ---------------------------------------------------------------- 渲染
+
+  function renderChips() {
+    const chips = [];
+    const overview = state.overview;
+    if (!overview) {
+      chips.push(h('span', { class: 'chip' }, h('span', { class: 'dot' }), '加载中…'));
+    } else {
+      const running = overview.listener.running;
+      const cookie = overview.cookie;
+      const posts = overview.state?.posts || [];
+      const total = posts.reduce((sum, post) => sum + (Number(post.total) || 0), 0);
+
+      chips.push(
+        h('span', { class: 'chip' },
+          h('span', { class: `dot ${running ? 'ok' : 'danger'}` }),
+          running ? '监听运行中' : '监听未运行',
+          running ? h('b', {}, `PID ${overview.listener.pid}`) : null,
+        ),
+      );
+      chips.push(
+        h('span', { class: 'chip' },
+          h('span', { class: `dot ${overview.task.installed ? (running ? 'ok' : 'warn') : 'danger'}` }),
+          overview.task.installed ? `计划任务 ${overview.task.status || '已安装'}` : '未安装计划任务',
+        ),
+      );
+      if (cookie.configured) {
+        const days = cookie.daysLeft;
+        const tone = days === null ? '' : days < 0 ? 'danger' : days <= 3 ? 'warn' : '';
+        chips.push(
+          h('span', { class: 'chip' },
+            h('span', { class: `dot ${tone}` }),
+            'Cookie ',
+            h('b', {}, days === null ? '无法预判' : days < 0 ? '已过期' : `剩 ${days} 天`),
+          ),
+        );
+      } else {
+        chips.push(h('span', { class: 'chip' }, h('span', { class: 'dot danger' }), '未配置 Cookie'));
+      }
+      chips.push(h('span', { class: 'chip' }, '待审 ', h('b', {}, String(total))));
+    }
+    const container = $('#chips');
+    container.replaceChildren(...chips);
+  }
+
+  function renderOverview() {
+    renderChips();
+    const overview = state.overview;
+    if (!overview) return;
+
+    const info = $('#diagInfo');
+    $('#footer').textContent = `配置目录：${overview.paths?.root || '—'}`;
+    const posts = overview.state?.posts || [];
+    const lastPoll = posts
+      .map((post) => post.lastPollAt)
+      .filter(Boolean)
+      .sort()
+      .pop();
+    const items = [
+      ['监听进程', overview.listener.running ? `运行中（PID ${overview.listener.pid}）` : '未运行'],
+      ['计划任务', overview.task.installed ? `已安装 · ${overview.task.status || '未知'}` : '未安装'],
+      ['Cookie', overview.cookie.configured
+        ? `有效期至 ${fmtTime(overview.cookie.expiresAt).slice(0, 10)}${overview.cookie.daysLeft === null ? '' : `（剩 ${overview.cookie.daysLeft} 天）`}`
+        : '未配置'],
+      ['状态文件', overview.state?.file || '—'],
+      ['最近轮询', fmtTime(lastPoll)],
+      ['暂停/退避', overview.state?.authPausedUntil ? `Cookie 失效暂停至 ${fmtTime(overview.state.authPausedUntil)}`
+        : overview.state?.backoffUntil ? `限流退避至 ${fmtTime(overview.state.backoffUntil)}` : '无'],
+      ['配置错误', overview.configError || '无'],
+    ];
+    info.replaceChildren(...items.flatMap(([key, value]) => [h('dt', { text: key }), h('dd', { text: value })]));
+
+    const postStates = $('#postStates');
+    if (posts.length > 0) {
+      postStates.replaceChildren(
+        h('table', {},
+          h('thead', {}, h('tr', {}, ['微博 ID', '名称', '待审', '已记录', '最近轮询', '最近推送', '最近错误'].map((label) => h('th', { text: label })))),
+          h('tbody', {}, posts.map((post) => h('tr', {},
+            h('td', { class: 'mono' }, post.id),
+            h('td', {}, post.name, post.inConfig ? null : h('span', { class: 'muted' }, '（配置中已移除）')),
+            h('td', { class: 'mono' }, String(post.total ?? '—')),
+            h('td', { class: 'mono' }, String(post.seenCount)),
+            h('td', { class: 'mono' }, fmtTime(post.lastPollAt)),
+            h('td', { class: 'mono' }, fmtTime(post.lastPushAt)),
+            h('td', {}, post.lastError ? h('span', { class: 'badge danger' }, post.lastError.message) : '—'),
+          ))),
+        ),
+      );
+    } else {
+      postStates.replaceChildren();
+    }
+  }
+
+  function renderCredentials() {
+    const creds = state.creds;
+    if (!creds) return;
+
+    const cookieBadge = $('#cookieBadge');
+    cookieBadge.textContent = creds.cookie.configured ? '已配置' : '未配置';
+    cookieBadge.className = `badge ${creds.cookie.configured ? 'ok' : 'danger'}`;
+
+    const cookieStatus = creds.cookie.configured
+      ? [
+          h('span', { class: 'mono' }, `…${creds.cookie.tail || '****'}`),
+          h('span', { class: 'muted' }, `${creds.cookie.length} 字符`),
+          creds.cookie.expiresAt
+            ? h('span', { class: `badge ${creds.cookie.daysLeft !== null && creds.cookie.daysLeft <= 3 ? 'warn' : ''}` },
+                creds.cookie.daysLeft !== null && creds.cookie.daysLeft < 0
+                  ? '已过期'
+                  : `有效期至 ${fmtTime(creds.cookie.expiresAt).slice(0, 10)}${creds.cookie.daysLeft === null ? '' : ` · 剩 ${creds.cookie.daysLeft} 天`}`)
+            : h('span', { class: 'muted' }, '无法从 Cookie 预判有效期'),
+        ]
+      : [h('span', { class: 'muted' }, '尚未配置，监听无法启动')];
+    $('#cookieStatus').replaceChildren(...cookieStatus);
+
+    const tokenBadge = $('#tokenBadge');
+    tokenBadge.textContent = creds.appToken.configured ? '已配置' : '未配置';
+    tokenBadge.className = `badge ${creds.appToken.configured ? 'ok' : 'danger'}`;
+    $('#tokenStatus').replaceChildren(
+      ...(creds.appToken.configured
+        ? [
+            h('span', { class: 'mono' }, `…${creds.appToken.tail || '****'}`),
+            h('span', { class: 'muted' }, `${creds.appToken.length} 字符`),
+          ]
+        : [h('span', { class: 'muted' }, '尚未配置，无法推送')]),
+    );
+
+    $('#uidsInput').value = (creds.uids || []).join(', ');
+    $('#logLevelSelect').value = creds.logLevel || 'info';
+  }
+
+  function renderConfig() {
+    const config = state.config;
+    if (!config) return;
+
+    $('#pollIntervalSec').value = config.pollIntervalSec;
+    $('#jitterSec').value = config.jitterSec;
+    $('#requestTimeoutMs').value = config.requestTimeoutMs;
+    $('#maxCommentChars').value = config.maxCommentChars;
+    $('#deepScanIntervalHours').value = config.deepScanIntervalHours;
+    $('#deepScanMaxPages').value = config.deepScanMaxPages;
+    $('#baselineMaxPages').value = config.baselineMaxPages;
+    $('#maxSeenPerPost').value = config.maxSeenPerPost;
+    $('#heartbeatEnabled').checked = config.heartbeatHour !== null;
+    $('#heartbeatHour').value = config.heartbeatHour === null ? 9 : config.heartbeatHour;
+    $('#heartbeatHour').disabled = config.heartbeatHour === null;
+    $('#notifyOnStart').checked = Boolean(config.notifyOnStart);
+    $('#configLogLevel').value = config.logLevel;
+    $('#excludeKeywords').value = (config.filters?.excludeKeywords || []).join('\n');
+    renderPosts(config.posts || []);
+  }
+
+  function renderPosts(posts) {
+    const container = $('#posts');
+    container.replaceChildren(...posts.map((post) => postRow(post)));
+    if (posts.length === 0) {
+      container.append(h('p', { class: 'hint' }, '还没有监控的微博，点右上角「+ 添加」。'));
+    }
+  }
+
+  function postRow(post = {}) {
+    const row = h('div', { class: 'post-row' });
+    row.append(
+      h('label', { class: 'field' }, '微博 ID',
+        h('input', { class: 'post-id mono', type: 'text', value: post.id || '', placeholder: '纯数字', inputmode: 'numeric' })),
+      h('label', { class: 'field' }, '名称',
+        h('input', { class: 'post-name', type: 'text', value: post.name || '', placeholder: '主微博' })),
+      h('label', { class: 'field', style: 'min-width:0' }, '链接（可选）',
+        h('input', { class: 'post-url', type: 'text', value: post.url || '', placeholder: '自动解析' })),
+      h('div', { style: 'display:flex;gap:8px;align-items:center;padding-bottom:2px' },
+        h('label', { class: 'switch', style: 'padding-bottom:0' },
+          h('input', { class: 'post-enabled', type: 'checkbox', checked: post.enabled !== false }), '启用'),
+        h('button', { class: 'btn danger small', type: 'button', onclick: () => row.remove() }, '删除'),
+      ),
+    );
+    return row;
+  }
+
+  function collectConfig() {
+    const posts = $$('#posts .post-row').map((row) => {
+      const item = {
+        id: $('.post-id', row).value.trim(),
+        name: $('.post-name', row).value.trim(),
+        enabled: $('.post-enabled', row).checked,
+      };
+      const url = $('.post-url', row).value.trim();
+      if (url) item.url = url;
+      return item;
+    });
+
+    const heartbeatEnabled = $('#heartbeatEnabled').checked;
+    const numbers = {};
+    for (const id of ['pollIntervalSec', 'jitterSec', 'requestTimeoutMs', 'maxCommentChars', 'deepScanIntervalHours', 'deepScanMaxPages', 'baselineMaxPages', 'maxSeenPerPost']) {
+      const value = Number($('#' + id).value);
+      if (!Number.isInteger(value)) throw new Error(`${id} 必须是整数`);
+      numbers[id] = value;
+    }
+
+    return {
+      ...numbers,
+      heartbeatHour: heartbeatEnabled ? Number($('#heartbeatHour').value) : null,
+      notifyOnStart: $('#notifyOnStart').checked,
+      logLevel: $('#configLogLevel').value,
+      posts,
+      filters: {
+        excludeKeywords: $('#excludeKeywords').value
+          .split(/\r?\n/)
+          .map((item) => item.trim())
+          .filter(Boolean),
+      },
+      stateFile: state.config?.stateFile || 'data/state.json',
+      logDir: state.config?.logDir || 'logs',
+    };
+  }
+
+  // ---------------------------------------------------------------- 事件
+
+  function showBanner(message, tone = 'ok') {
+    const banner = $('#banner');
+    banner.className = `banner ${tone === 'ok' ? '' : tone}`;
+    banner.replaceChildren(h('span', { text: message }), h('button', { type: 'button', onclick: () => { banner.hidden = true; } }, '✕'));
+    banner.hidden = false;
+  }
+
+  function restartText(restart) {
+    if (!restart) return '';
+    if (restart.ok) return restart.message;
+    return restart.message || '未重启监听';
+  }
+
+  async function loadOverview() {
+    const data = await api('/api/overview');
+    state.overview = data;
+    renderOverview();
+  }
+
+  async function loadAll() {
+    const [overview, config, creds] = await Promise.all([
+      api('/api/overview'),
+      api('/api/config'),
+      api('/api/credentials'),
+    ]);
+    state.overview = overview;
+    state.config = config.config;
+    state.configMtime = config.mtimeMs;
+    state.creds = creds;
+    renderOverview();
+    renderConfig();
+    renderCredentials();
+  }
+
+  async function saveCredentials(event) {
+    const button = event.currentTarget;
+    const payload = { mtimeMs: state.creds?.mtimeMs };
+    if (state.pendingCookie.trim()) payload.cookie = state.pendingCookie;
+    if (state.pendingToken.trim()) payload.appToken = state.pendingToken;
+
+    const uids = $('#uidsInput').value.trim();
+    if (uids !== (state.creds?.uids || []).join(', ')) payload.uids = uids;
+    const level = $('#logLevelSelect').value;
+    if (level !== (state.creds?.logLevel || 'info')) payload.logLevel = level;
+
+    if (!payload.cookie && !payload.appToken && payload.uids === undefined && payload.logLevel === undefined) {
+      toast('没有检测到改动', 'warn');
+      return;
+    }
+
+    setBusy(button, true, '保存并重启…');
+    try {
+      const result = await api('/api/credentials', { method: 'POST', body: payload });
+      state.pendingCookie = '';
+      state.pendingToken = '';
+      $('#cookieInput').value = '';
+      $('#tokenInput').value = '';
+      $('#cookieEditor').hidden = true;
+      $('#tokenEditor').hidden = true;
+      $('#cookieToggle').textContent = '替换 Cookie';
+      $('#tokenToggle').textContent = '替换 Token';
+
+      const warnings = result.warnings || [];
+      const summary = `已保存 ${result.saved.join('、')}`;
+      showBanner(`${summary} · ${restartText(result.restart)}`, result.restart && result.restart.ok ? 'ok' : 'warn');
+      if (warnings.length) warnings.forEach((warning) => toast(warning, 'warn'));
+      toast('凭据已保存');
+      await loadAll();
+    } catch (error) {
+      showBanner(error.message, 'error');
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function saveConfig(event) {
+    const button = event.currentTarget;
+    let config;
+    try {
+      config = collectConfig();
+    } catch (error) {
+      toast(error.message, 'error');
+      return;
+    }
+
+    setBusy(button, true, '保存并重启…');
+    try {
+      const result = await api('/api/config', { method: 'POST', body: { config, mtimeMs: state.configMtime } });
+      state.config = result.config;
+      state.configMtime = result.mtimeMs;
+      renderConfig();
+      showBanner(`已保存 config.json · ${restartText(result.restart)}`, result.restart && result.restart.ok ? 'ok' : 'warn');
+      toast('配置已保存');
+      await loadOverview();
+    } catch (error) {
+      showBanner(error.message, 'error');
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function runTestFetch(event) {
+    const button = event.currentTarget;
+    setBusy(button, true, '抓取中…');
+    try {
+      const result = await api('/api/test-fetch', { method: 'POST', body: {} });
+      const rows = result.results.map((item) => h('tr', {},
+        h('td', {}, item.name),
+        h('td', { class: 'mono' }, item.postId),
+        h('td', {}, item.ok ? h('span', { class: 'badge ok' }, '正常') : h('span', { class: 'badge danger' }, item.code || '失败')),
+        h('td', { class: 'mono' }, item.ok ? `${item.total ?? '—'} 条待审 / 本页 ${item.fetched}` : item.message),
+        h('td', { class: 'mono' }, `${item.ms} ms`),
+      ));
+      $('#credResult').replaceChildren(
+        h('table', {},
+          h('thead', {}, h('tr', {}, ['微博', 'ID', '结果', '详情', '耗时'].map((label) => h('th', { text: label })))),
+          h('tbody', {}, rows),
+        ),
+      );
+      toast(result.ok ? '抓取正常' : '抓取存在问题', result.ok ? 'ok' : 'warn');
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function runTestPush(event) {
+    const button = event.currentTarget;
+    setBusy(button, true, '发送中…');
+    try {
+      const result = await api('/api/test-push', { method: 'POST', body: {} });
+      toast(result.message || '测试消息已发送');
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function runDryRun(event) {
+    const button = event.currentTarget;
+    setBusy(button, true, '试跑中…');
+    $('#dryRunResult').replaceChildren(h('p', { class: 'hint' }, '正在用当前 Cookie 真实请求微博接口…'));
+    try {
+      const result = await api('/api/dry-run', { method: 'POST', body: {} });
+      const rows = (result.results || []).map((item) => h('tr', {},
+        h('td', { class: 'mono' }, item.postId),
+        h('td', {}, item.skipped ? h('span', { class: 'badge warn' }, '跳过')
+          : item.baseline ? h('span', { class: 'badge warn' }, '建立基线')
+          : item.ok === false ? h('span', { class: 'badge danger' }, item.code || '失败')
+          : h('span', { class: 'badge ok' }, '正常')),
+        h('td', { class: 'mono' }, String(item.total ?? '—')),
+        h('td', { class: 'mono' }, String(item.newCount ?? 0)),
+        h('td', {}, item.error ? item.error : `${item.pushed ?? 0} 条将被推送`),
+      ));
+      const children = [];
+      children.push(h('p', { class: 'hint' }, `耗时 ${result.durationMs} ms${result.skipped ? ` · 本轮被跳过（${result.skipped}）` : ''}`));
+      if (result.error) children.push(h('div', { class: 'banner error' }, result.error));
+      if (rows.length) {
+        children.push(h('table', {},
+          h('thead', {}, h('tr', {}, ['微博 ID', '结果', '待审', '新评论', '说明'].map((label) => h('th', { text: label })))),
+          h('tbody', {}, rows),
+        ));
+      }
+      children.push(h('pre', { class: 'logs' }, (result.lines || []).join('\n') || '（无日志输出）'));
+      $('#dryRunResult').replaceChildren(...children);
+      toast(result.ok ? '试跑完成' : '试跑失败', result.ok ? 'ok' : 'error');
+    } catch (error) {
+      $('#dryRunResult').replaceChildren();
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function restartNow(event) {
+    const button = event.currentTarget;
+    setBusy(button, true, '重启中…');
+    try {
+      const result = await api('/api/restart', { method: 'POST', body: {} });
+      showBanner(result.restart.message, result.restart.ok ? 'ok' : 'warn');
+      toast(result.restart.message, result.restart.ok ? 'ok' : 'warn');
+      await loadOverview();
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function loadLogs() {
+    try {
+      const result = await api('/api/logs?tail=100');
+      $('#logs').textContent = result.lines.join('\n') || '（暂无日志）';
+      $('#logFileHint').textContent = `${result.file} · 共 ${result.total} 行，显示最后 ${result.lines.length} 行`;
+    } catch (error) {
+      $('#logs').textContent = error.message;
+    }
+  }
+
+  function bindTabs() {
+    $$('.tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        $$('.tab').forEach((item) => item.setAttribute('aria-selected', String(item === tab)));
+        $$('.panel').forEach((panel) => panel.classList.toggle('active', panel.dataset.panel === tab.dataset.tab));
+        if (tab.dataset.tab === 'diag') loadLogs();
+      });
+    });
+  }
+
+  function bindEvents() {
+    $('#cookieToggle').addEventListener('click', () => {
+      const editor = $('#cookieEditor');
+      editor.hidden = !editor.hidden;
+      $('#cookieToggle').textContent = editor.hidden ? '替换 Cookie' : '取消替换';
+      if (!editor.hidden) $('#cookieInput').focus();
+    });
+    $('#tokenToggle').addEventListener('click', () => {
+      const editor = $('#tokenEditor');
+      editor.hidden = !editor.hidden;
+      $('#tokenToggle').textContent = editor.hidden ? '替换 Token' : '取消替换';
+      if (!editor.hidden) $('#tokenInput').focus();
+    });
+    $('#cookieInput').addEventListener('input', (event) => { state.pendingCookie = event.target.value; });
+    $('#tokenInput').addEventListener('input', (event) => { state.pendingToken = event.target.value; });
+    $('#saveCreds').addEventListener('click', saveCredentials);
+    $('#saveConfig').addEventListener('click', saveConfig);
+    $('#testFetch').addEventListener('click', runTestFetch);
+    $('#testPush').addEventListener('click', runTestPush);
+    $('#dryRun').addEventListener('click', runDryRun);
+    $('#restartNow').addEventListener('click', restartNow);
+    $('#reloadLogs').addEventListener('click', loadLogs);
+    $('#addPost').addEventListener('click', () => {
+      const container = $('#posts');
+      const placeholder = container.querySelector('p.hint');
+      if (placeholder) placeholder.remove();
+      container.append(postRow({ enabled: true }));
+    });
+    $('#heartbeatEnabled').addEventListener('change', (event) => {
+      $('#heartbeatHour').disabled = !event.target.checked;
+    });
+  }
+
+  async function boot() {
+    const params = new URLSearchParams(location.hash.slice(1));
+    const fromHash = params.get('t');
+    if (fromHash) {
+      sessionStorage.setItem(TOKEN_KEY, fromHash);
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+    state.token = sessionStorage.getItem(TOKEN_KEY) || '';
+
+    if (!state.token) {
+      $('#gate').hidden = false;
+      return;
+    }
+
+    $('#app').hidden = false;
+    bindTabs();
+    bindEvents();
+    try {
+      await loadAll();
+      await loadLogs();
+    } catch (error) {
+      if (error.status === 401) {
+        $('#app').hidden = true;
+        $('#gate').hidden = false;
+        return;
+      }
+      toast(error.message, 'error');
+      showBanner(error.message, 'error');
+    }
+
+    setInterval(() => {
+      if (document.hidden) return;
+      loadOverview().catch(() => {});
+    }, 20000);
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

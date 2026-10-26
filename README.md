@@ -22,6 +22,7 @@ WeiBoListener/
 ├─ .env                  # Cookie 和 WxPusher 密钥（不要提交/分享）
 ├─ .env.example          # 配置模板
 ├─ start.bat             # Windows 启动脚本
+├─ admin.bat             # 打开本地配置面板
 ├─ run-hidden.vbs        # 任务计划用隐藏启动器
 ├─ install-task.ps1      # 注册开机自启
 ├─ uninstall-task.ps1    # 删除开机自启
@@ -142,6 +143,38 @@ npm run once
 ```
 
 按 `Ctrl+C` 可以退出常驻进程。
+
+## 网页配置面板（可选）
+
+不想手改文件时，可以开一个只在本机运行的网页控制台：
+
+```bash
+npm run admin          # 或直接双击 admin.bat
+```
+
+终端会打印形如 `http://127.0.0.1:8787/#t=<令牌>` 的地址并自动打开浏览器。**这个地址含一次性的访问令牌，别分享**；关掉终端窗口（或 Ctrl+C）面板就停了，不影响监听进程本身。
+
+![凭据页](docs/screenshots/admin-creds.png)
+
+面板分三个页签：
+
+| 页签 | 能做什么 |
+|---|---|
+| 凭据 | 换微博 Cookie、换 WxPusher AppToken、改 UID 与日志级别；**测试抓取**验证 Cookie 是否还有效；**发送测试推送**验证手机能不能收到 |
+| 微博与轮询 | 增删监控的微博、改轮询间隔/抖动/字符上限/心跳/排除关键词/启动通知 |
+| 诊断 | 进程与计划任务状态、Cookie 剩余天数、每篇微博的待审与最近轮询、**试跑一轮**（真实请求但不写状态不推送）、今日日志尾部 |
+
+![微博与轮询](docs/screenshots/admin-config.png)
+
+保存后会**自动重启监听**（结束旧进程 → 重新拉起计划任务），成功时横幅显示 `已重启监听：PID 1234 → 5678`。两点需要知道：
+
+- 若 `notifyOnStart` 是开着的，重启会额外推送一条"微博监听已启动"；
+- 如果监听当时没在运行，面板只保存配置、不会自动把它拉起来；
+- 想关掉自动重启（例如调试页面），用 `node src/admin.js --no-restart`；换端口用 `--port 8080`。
+
+![诊断](docs/screenshots/admin-diag.png)
+
+安全边界：只监听 `127.0.0.1`、校验 Host/Origin、除首页外都要令牌；Cookie 与 Token **不会回传浏览器**（只显示尾部 6 位和长度），要换就得整段粘贴新的。
 
 ## Windows 开机自启
 

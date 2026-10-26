@@ -4,6 +4,7 @@ logs/
 node_modules/
 *.log
 *.tmp
+*.bak
 
 # 本地接口笔记与抓包样本（含 Cookie、真实评论内容，勿入库）
 接口信息.txt
