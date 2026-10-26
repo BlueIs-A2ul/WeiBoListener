@@ -856,6 +856,58 @@ function parseArgs(argv) {
   return args;
 }
 
+const PORT_SCAN_RANGE = 10;
+
+function listenOnce(server, port, host) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => {
+      server.off('listening', onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(port, host);
+  });
+}
+
+/**
+ * 优先使用 preferred；被占用时依次往后找，最多顺延 attempts 个端口，
+ * 仍然不行就交给系统分配（port 0），保证控制台总能启动。
+ */
+export async function listenWithFallback(server, { host = HOST, preferred, attempts = PORT_SCAN_RANGE } = {}) {
+  if (!Number.isInteger(preferred) || preferred <= 0 || preferred > 65535) {
+    throw new Error('preferred 必须是 1-65535 的整数');
+  }
+
+  const candidates = [];
+  for (let offset = 0; offset <= attempts && preferred + offset <= 65535; offset += 1) {
+    candidates.push({ port: preferred + offset, mode: offset === 0 ? 'preferred' : 'next' });
+  }
+  candidates.push({ port: 0, mode: 'ephemeral' });
+
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      await listenOnce(server, candidate.port, host);
+      return {
+        port: server.address().port,
+        preferred,
+        fallback: candidate.mode !== 'preferred',
+        mode: candidate.mode,
+      };
+    } catch (err) {
+      if (err.code !== 'EADDRINUSE' && err.code !== 'EACCES') throw err;
+      lastError = err;
+    }
+  }
+
+  throw lastError ?? new Error('没有找到可用端口');
+}
+
 function openBrowser(url) {
   const [command, args] =
     process.platform === 'win32'
@@ -872,6 +924,7 @@ async function main() {
     console.log(`用法：node src/admin.js [--port 8787] [--root <目录>] [--no-open] [--no-restart]
 
 启动本机配置控制台（仅监听 127.0.0.1），启动后在终端打印带一次性令牌的访问地址。
+端口被占用时会自动顺延到下一个空闲端口（最多顺延 10 个，再不行由系统分配）。
 保存配置后会自动重启计划任务 WeiBoListener（若监听正在运行）。`);
     return;
   }
@@ -879,22 +932,25 @@ async function main() {
   const token = crypto.randomBytes(16).toString('hex');
   const server = createAdminServer({ root: args.root, token, autoRestart: args.autoRestart });
 
-  server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`端口 ${args.port} 已被占用，请用 --port 换一个端口重试`);
-    } else {
-      console.error(`控制台启动失败：${err.message}`);
-    }
-    process.exitCode = 1;
-  });
+  const bound = await listenWithFallback(server, { preferred: args.port });
+  if (bound.fallback) {
+    const detail =
+      bound.mode === 'ephemeral'
+        ? `端口 ${args.port} 及其后 ${PORT_SCAN_RANGE} 个端口都被占用，已改用系统分配端口 ${bound.port}`
+        : `端口 ${args.port} 已被占用，已自动改用 ${bound.port}`;
+    console.log(detail);
+  }
 
-  server.listen(args.port, HOST, () => {
-    const url = `http://${HOST}:${args.port}/#t=${token}`;
-    console.log('微博监听配置控制台已启动（仅本机可访问）');
-    console.log(`  地址：${url}`);
-    console.log('  地址中含一次性访问令牌，请勿分享；按 Ctrl+C 关闭控制台。');
-    console.log(`  配置目录：${args.root}`);
-    if (args.open) openBrowser(url);
+  const url = `http://${HOST}:${bound.port}/#t=${token}`;
+  console.log('微博监听配置控制台已启动（仅本机可访问）');
+  console.log(`  地址：${url}`);
+  console.log('  地址中含一次性访问令牌，请勿分享；按 Ctrl+C 关闭控制台。');
+  console.log(`  配置目录：${args.root}`);
+  if (args.open) openBrowser(url);
+
+  server.on('error', (err) => {
+    console.error(`控制台运行异常：${err.message}`);
+    process.exitCode = 1;
   });
 
   const shutdown = () => {

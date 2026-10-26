@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,6 +9,7 @@ import {
   createAdminServer,
   formatEnvValue,
   isAllowedHost,
+  listenWithFallback,
   maskSecret,
   parseEnvText,
   updateEnvText,
@@ -215,6 +217,49 @@ test('POST /api/restart 在关闭自动重启时安全返回', async () => {
     assert.equal(response.json.restart.ok, false);
     assert.equal(response.json.restart.reason, 'disabled');
   });
+});
+
+test('默认端口被占用时自动改用空闲端口', async () => {
+  const blocker = http.createServer((req, res) => res.end('busy'));
+  await new Promise((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+  const busyPort = blocker.address().port;
+
+  const root = await makeRoot();
+  const server = createAdminServer({ root, token: 'test-token', autoRestart: false });
+
+  try {
+    const bound = await listenWithFallback(server, { preferred: busyPort, attempts: 3 });
+    assert.equal(bound.fallback, true);
+    assert.notEqual(bound.port, busyPort);
+    assert.equal(bound.mode, 'next');
+
+    const response = await fetch(`http://127.0.0.1:${bound.port}/`);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /<title>微博监听/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await new Promise((resolve) => blocker.close(resolve));
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('端口空闲时使用首选端口', async () => {
+  const probe = http.createServer(() => {});
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const freePort = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+
+  const root = await makeRoot();
+  const server = createAdminServer({ root, token: 'test-token', autoRestart: false });
+  try {
+    const bound = await listenWithFallback(server, { preferred: freePort });
+    assert.equal(bound.port, freePort);
+    assert.equal(bound.fallback, false);
+    assert.equal(bound.mode, 'preferred');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test('admin.html 的内联脚本语法正确', async () => {

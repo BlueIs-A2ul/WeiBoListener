@@ -67,7 +67,9 @@ src/admin.js  ── 复用 ──▶ src/config.js  (normalizeConfig / getEnvCo
 
 ## 5. 启动与鉴权
 
-- 默认监听 `127.0.0.1:8787`，`--port <n>` 可覆盖；端口占用时报错退出并提示换端口。
+- 默认监听 `127.0.0.1:8787`，`--port <n>` 可覆盖。
+- 端口被占用（`EADDRINUSE`）或无权绑定（`EACCES`）时不报错退出，而是依次尝试后续 10 个端口，仍不行则交给系统分配（`port 0`）；终端明确提示"端口 X 已被占用，已自动改用 Y"。以实际绑定端口生成访问地址与自动打开的链接。
+- 实测：本机 8787 被另一个项目的 dev server 占用，连续启动两个控制台分别落在 8788 / 8789。
 - 启动时生成 32 位十六进制随机 token（`crypto.randomBytes(16).toString('hex')`），控制台打印并自动打开 `http://127.0.0.1:<port>/#t=<token>`。
 - token 只放在 URL 片段（`#`）里，浏览器不会把它发给服务端，也不会出现在 Referer 或服务端访问日志中；前端取出后存入 `sessionStorage`，后续请求走 `x-admin-token` 头。
 - 除 `GET /` 外，所有 API 都要校验 token（`crypto.timingSafeEqual`），失败返回 401。
