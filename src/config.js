@@ -124,7 +124,9 @@ export async function loadConfig(configPath) {
     text = await fs.readFile(configPath, 'utf8');
   } catch (err) {
     if (err.code === 'ENOENT') {
-      throw new ConfigError(`找不到配置文件：${configPath}。请从 config.json 示例创建。`);
+      throw new ConfigError(
+        `找不到配置文件：${configPath}。请复制 config.example.json 为 config.json，或用配置面板生成。`,
+      );
     }
     throw new ConfigError(`读取配置文件失败：${err.message}`);
   }

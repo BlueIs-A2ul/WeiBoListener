@@ -10,6 +10,9 @@ node_modules/
 接口信息.txt
 响应.json
 
+# 本机运行配置（含个人微博 ID，不要提交）
+config.json
+
 # 打包产物
 dist/
 

@@ -1,0 +1,25 @@
+{
+  "pollIntervalSec": 300,
+  "jitterSec": 15,
+  "requestTimeoutMs": 15000,
+  "deepScanIntervalHours": 6,
+  "deepScanMaxPages": 10,
+  "baselineMaxPages": 10,
+  "heartbeatHour": 9,
+  "notifyOnStart": true,
+  "maxCommentChars": 200,
+  "maxSeenPerPost": 20000,
+  "stateFile": "data/state.json",
+  "logDir": "logs",
+  "logLevel": "info",
+  "posts": [
+    {
+      "id": "1234567890123456",
+      "name": "示例微博",
+      "enabled": true
+    }
+  ],
+  "filters": {
+    "excludeKeywords": []
+  }
+}

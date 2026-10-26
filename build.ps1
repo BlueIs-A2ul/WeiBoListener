@@ -47,6 +47,7 @@ New-Item -ItemType Directory -Force $appDir | Out-Null
 Copy-Item (Join-Path $root 'src\*.js') $appDir
 Copy-Item (Join-Path $root 'src\admin.html') $appDir
 Copy-Item (Join-Path $root '.env.example') $dist -Force
+Copy-Item (Join-Path $root 'config.example.json') $dist -Force
 Copy-Item (Join-Path $root 'packaging\first-run.txt') (Join-Path $dist '首次使用.txt') -Force
 if ($IncludeEnv -and (Test-Path (Join-Path $root '.env'))) {
   Copy-Item (Join-Path $root '.env') $dist -Force
