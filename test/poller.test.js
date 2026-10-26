@@ -312,3 +312,69 @@ test('Cookie 失效时暂停并发送一次告警', async () => {
   assert.equal(sent.length, 1);
   assert.match(sent[0].content, /Cookie 失效/);
 });
+test('一轮全部失败后累计失败轮数，成功一轮后清零', async () => {
+  const config = makeConfig();
+  const state = seededState();
+  const failing = async () => {
+    const err = new Error('请求微博失败：fetch failed');
+    err.code = 'WEIBO_NETWORK';
+    throw err;
+  };
+
+  await pollAll({
+    config,
+    state,
+    logger: makeLogger(),
+    fetchPage: failing,
+    sendMessage: async () => {},
+    saveState: async () => {},
+    now: fixedNow,
+    sleep: async () => {},
+  });
+  assert.equal(state.failStreak, 1);
+
+  await pollAll({
+    config,
+    state,
+    logger: makeLogger(),
+    fetchPage: async () => page([comment(2)], { maxId: '0' }),
+    sendMessage: async () => {},
+    saveState: async () => {},
+    now: fixedNow,
+    sleep: async () => {},
+  });
+  assert.equal(state.failStreak, 0);
+  assert.ok(state.lastSuccessAt);
+});
+
+test('连续 3 轮失败推送一次告警，第 4 轮不重复', async () => {
+  const config = makeConfig();
+  const state = seededState();
+  const sent = [];
+  const failing = async () => {
+    const err = new Error('请求微博失败：fetch failed');
+    err.code = 'WEIBO_NETWORK';
+    throw err;
+  };
+  const deps = {
+    config,
+    state,
+    logger: makeLogger(),
+    fetchPage: failing,
+    sendMessage: async (message) => sent.push(message),
+    saveState: async () => {},
+    now: fixedNow,
+    sleep: async () => {},
+  };
+
+  await pollAll(deps);
+  await pollAll(deps);
+  assert.equal(sent.length, 0);
+
+  await pollAll(deps);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].content, /连续失败/);
+
+  await pollAll(deps);
+  assert.equal(sent.length, 1);
+});

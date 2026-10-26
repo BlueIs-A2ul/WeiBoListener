@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { maybeStartupAlert } from './alerts.js';
 import { getEnvConfig, loadConfig } from './config.js';
+import { loadDotEnv } from './env.js';
 import { createLogger } from './logger.js';
 import { acquireLock } from './lock.js';
 import { sendWxPusher } from './notify.js';
@@ -66,32 +67,6 @@ function computeDelay(config, elapsedMs) {
     ? (Math.random() * 2 - 1) * config.jitterSec * 1000
     : 0;
   return Math.max(5000, base + jitter - elapsedMs);
-}
-
-function loadDotEnv(envPath) {
-  if (!fs.existsSync(envPath)) return false;
-  if (typeof process.loadEnvFile === 'function') {
-    process.loadEnvFile(envPath);
-    return true;
-  }
-
-  const text = fs.readFileSync(envPath, 'utf8');
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    const equals = line.indexOf('=');
-    if (equals === -1) continue;
-    const key = line.slice(0, equals).trim();
-    let value = line.slice(equals + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (!(key in process.env)) process.env[key] = value;
-  }
-  return true;
 }
 
 function logCookieExpiry(cookie, logger) {
@@ -163,9 +138,8 @@ async function main() {
   const configPath = args.config ? path.resolve(args.config) : path.join(ROOT, 'config.json');
   const envPath = path.join(ROOT, '.env');
 
-  if (loadDotEnv(envPath)) {
-    // env 已加载
-  } else {
+  const envFile = loadDotEnv({ file: envPath });
+  if (!envFile.loaded) {
     console.warn(`未找到 ${envPath}，将使用系统环境变量`);
   }
 
@@ -177,11 +151,31 @@ async function main() {
     logDir: path.resolve(ROOT, config.logDir),
   });
 
+  for (const conflict of envFile.conflicts) {
+    logger.warn(
+      `系统环境变量 ${conflict.key} 覆盖了 .env 里的同名配置，面板里改这一项不会生效（如需以 .env 为准，请先在系统环境变量里删掉它）`,
+    );
+  }
+
   logger.info(`微博监听启动（Node ${process.version}，${process.platform}）`);
   logger.info(`配置文件：${configPath}`);
   logger.info(
     `监控 ${config.posts.filter((post) => post.enabled).length} 条微博，轮询间隔 ${config.pollIntervalSec} 秒，抖动 ±${config.jitterSec} 秒${args.dryRun ? '，dry-run 模式' : ''}`,
   );
+
+  const stateFile = path.resolve(ROOT, config.stateFile);
+  const { state, recoveredFrom } = await loadState(stateFile, { logger });
+  if (recoveredFrom) {
+    logger.warn(`状态文件损坏，已从备份恢复：${recoveredFrom}`);
+  }
+  const saveCurrentState = () => saveState(stateFile, state);
+  const sendMessage = (message) =>
+    sendWxPusher({
+      ...message,
+      appToken: env.wxpusherAppToken,
+      uids: env.wxpusherUids,
+      logger,
+    });
 
   if (args.testPush) {
     if (!env.wxpusherAppToken || env.wxpusherUids.length === 0) {
@@ -208,23 +202,27 @@ async function main() {
 
   if (!env.cookie) {
     logger.error('缺少 WEIBO_COOKIE。请复制 .env.example 为 .env 并填入微博 Cookie');
+    await maybeStartupAlert({
+      state,
+      reason: '缺少 WEIBO_COOKIE（.env 没填、或填了但被系统环境变量覆盖）',
+      logger,
+      dryRun: args.dryRun,
+      sendMessage,
+      now: () => new Date(),
+      saveState: saveCurrentState,
+    });
     process.exitCode = 1;
     return;
   }
 
   if (!args.dryRun && (!env.wxpusherAppToken || env.wxpusherUids.length === 0)) {
     logger.error('缺少 WxPusher 配置。请在 .env 中填入 WXPUSHER_APP_TOKEN 和 WXPUSHER_UIDS，或先用 --dry-run 测试');
+    logger.error('没有推送通道，这次启动失败无法通过手机告警，请手动修复 .env');
     process.exitCode = 1;
     return;
   }
 
   logCookieExpiry(env.cookie, logger);
-
-  const stateFile = path.resolve(ROOT, config.stateFile);
-  const { state, recoveredFrom } = await loadState(stateFile, { logger });
-  if (recoveredFrom) {
-    logger.warn(`状态文件损坏，已从备份恢复：${recoveredFrom}`);
-  }
 
   if (state.authPausedUntil || state.backoffUntil) {
     logger.info('启动时清除上次的暂停/退避状态（如果 Cookie 已更新，可立即恢复）');
@@ -272,14 +270,6 @@ async function main() {
       fetchImpl: fetch,
     });
 
-  const sendMessage = (message) =>
-    sendWxPusher({
-      ...message,
-      appToken: env.wxpusherAppToken,
-      uids: env.wxpusherUids,
-      logger,
-    });
-
   for (const post of config.posts.filter((item) => item.enabled)) {
     if (post.url) continue;
     try {
@@ -298,7 +288,6 @@ async function main() {
     }
   }
 
-  const saveCurrentState = () => saveState(stateFile, state);
   let firstCycle = true;
 
   if (
@@ -326,6 +315,7 @@ async function main() {
         saveState: saveCurrentState,
         now: () => new Date(),
         sleep,
+        cookieExpiry: parseCookieExpiry(env.cookie),
       });
 
       if (firstCycle) {

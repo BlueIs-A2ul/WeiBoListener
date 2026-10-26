@@ -509,6 +509,9 @@
         : '未配置'],
       ['状态文件', overview.state?.file || '—'],
       ['最近轮询', fmtTime(lastPoll)],
+      ['健康度', overview.state?.failStreak > 0 ? `异常：连续失败 ${overview.state.failStreak} 轮` : '正常（最近一轮成功）'],
+      ['最近成功', fmtTime(overview.state?.lastSuccessAt)],
+      ['最近推送', fmtTime(overview.state?.lastPushAt)],
       ['暂停/退避', overview.state?.authPausedUntil ? `Cookie 失效暂停至 ${fmtTime(overview.state.authPausedUntil)}`
         : overview.state?.backoffUntil ? `限流退避至 ${fmtTime(overview.state.backoffUntil)}` : '无'],
       ['配置错误', overview.configError || '无'],

@@ -25,8 +25,29 @@ export function createEmptyState() {
     authAlertAt: null,
     backoffUntil: null,
     lastHeartbeatDate: null,
+    // 健康度：最近一轮的结果、连续失败轮数、各类告警的去重时间
+    failStreak: 0,
+    lastCycleAt: null,
+    lastSuccessAt: null,
+    lastPushAt: null,
+    failAlertAt: null,
+    cookieAlertFor: null,
+    startupAlertAt: null,
   };
 }
+
+const OPTIONAL_STRING_FIELDS = [
+  'authPausedUntil',
+  'authAlertAt',
+  'backoffUntil',
+  'lastHeartbeatDate',
+  'lastCycleAt',
+  'lastSuccessAt',
+  'lastPushAt',
+  'failAlertAt',
+  'cookieAlertFor',
+  'startupAlertAt',
+];
 
 function normalizePostState(raw) {
   const state = raw && typeof raw === 'object' ? raw : {};
@@ -43,10 +64,10 @@ export function normalizeState(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const state = createEmptyState();
   state.updatedAt = typeof source.updatedAt === 'string' ? source.updatedAt : null;
-  state.authPausedUntil = typeof source.authPausedUntil === 'string' ? source.authPausedUntil : null;
-  state.authAlertAt = typeof source.authAlertAt === 'string' ? source.authAlertAt : null;
-  state.backoffUntil = typeof source.backoffUntil === 'string' ? source.backoffUntil : null;
-  state.lastHeartbeatDate = typeof source.lastHeartbeatDate === 'string' ? source.lastHeartbeatDate : null;
+  for (const key of OPTIONAL_STRING_FIELDS) {
+    state[key] = typeof source[key] === 'string' ? source[key] : null;
+  }
+  state.failStreak = Number.isInteger(source.failStreak) && source.failStreak > 0 ? source.failStreak : 0;
 
   if (source.posts && typeof source.posts === 'object' && !Array.isArray(source.posts)) {
     for (const [postId, postState] of Object.entries(source.posts)) {

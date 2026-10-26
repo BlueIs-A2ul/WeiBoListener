@@ -7,18 +7,16 @@ import {
   uniqueById,
 } from './diff.js';
 import { formatMessageChunks } from './format.js';
+import {
+  maybeAuthAlert,
+  maybeCookieExpiryAlert,
+  maybeFailureAlert,
+  maybeHeartbeat,
+} from './alerts.js';
 import { ensurePostState, markSeen, seenSet } from './state.js';
 
 function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function pad(n) {
-  return String(n).padStart(2, '0');
-}
-
-function localDate(date) {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 export async function pollPost({
@@ -189,63 +187,6 @@ export async function pollPost({
   };
 }
 
-async function maybeAuthAlert({ state, logger, dryRun, sendMessage, now, error }) {
-  const lastAlert = state.authAlertAt ? new Date(state.authAlertAt).getTime() : 0;
-  if (now().getTime() - lastAlert < 12 * 3600 * 1000) return;
-
-  const content = [
-    '微博监听 Cookie 失效',
-    error.message,
-    '请更新 .env 中的 WEIBO_COOKIE，然后重启程序。',
-  ].join('\n');
-
-  if (dryRun) {
-    logger.warn('[dry-run] 将发送 Cookie 失效告警');
-    state.authAlertAt = now().toISOString();
-    return;
-  }
-
-  try {
-    await sendMessage({ content, summary: '微博监听 Cookie 失效' });
-    state.authAlertAt = now().toISOString();
-    logger.warn('Cookie 失效告警已发送');
-  } catch (err) {
-    logger.error('Cookie 失效告警发送失败', { error: err.message });
-  }
-}
-
-async function maybeHeartbeat({ config, state, logger, dryRun, sendMessage, now }) {
-  if (config.heartbeatHour === null || config.heartbeatHour === undefined) return;
-
-  const current = now();
-  if (current.getHours() < config.heartbeatHour) return;
-
-  const today = localDate(current);
-  if (state.lastHeartbeatDate === today) return;
-
-  const enabledPosts = config.posts.filter((post) => post.enabled).length;
-  const content = [
-    '微博监听心跳',
-    '状态：正常',
-    `监控：${enabledPosts} 条微博`,
-    `时间：${current.toLocaleString('zh-CN', { hour12: false })}`,
-  ].join('\n');
-
-  if (dryRun) {
-    logger.info('[dry-run] 将发送每日心跳');
-    state.lastHeartbeatDate = today;
-    return;
-  }
-
-  try {
-    await sendMessage({ content, summary: '微博监听正常运行' });
-    state.lastHeartbeatDate = today;
-    logger.info('每日心跳已发送');
-  } catch (err) {
-    logger.error('每日心跳发送失败', { error: err.message });
-  }
-}
-
 export async function pollAll({
   config,
   state,
@@ -256,6 +197,7 @@ export async function pollAll({
   saveState = async () => {},
   now = () => new Date(),
   sleep = defaultSleep,
+  cookieExpiry = null,
 }) {
   const current = now();
 
@@ -271,12 +213,18 @@ export async function pollAll({
   const posts = config.posts.filter((post) => post.enabled);
   const results = [];
   let stopRemaining = false;
+  let okCount = 0;
+  let failCount = 0;
+  let skippedCount = 0;
+  let pushedTotal = 0;
+  let lastError = null;
 
   for (let index = 0; index < posts.length; index += 1) {
     const post = posts[index];
 
     if (stopRemaining) {
       results.push({ postId: post.id, skipped: true });
+      skippedCount += 1;
       continue;
     }
 
@@ -293,6 +241,8 @@ export async function pollAll({
         now,
       });
       results.push(result);
+      okCount += 1;
+      pushedTotal += Number(result.pushed) || 0;
       state.authPausedUntil = null;
       state.backoffUntil = null;
     } catch (err) {
@@ -309,6 +259,8 @@ export async function pollAll({
         status: err.status || null,
       };
       results.push({ postId: post.id, ok: false, error: err.message, code: err.code || null });
+      failCount += 1;
+      lastError = { name: post.name, message: err.message, code: err.code || null };
 
       if (err.code === 'WEIBO_AUTH') {
         stopRemaining = true;
@@ -324,10 +276,25 @@ export async function pollAll({
     if (index < posts.length - 1) await sleep(1000 + Math.floor(Math.random() * 1000));
   }
 
-  if (!stopRemaining && !state.authPausedUntil && !state.backoffUntil) {
-    await maybeHeartbeat({ config, state, logger, dryRun, sendMessage, now });
+  const cycle = { posts: posts.length, ok: okCount, failed: failCount, skipped: skippedCount, lastError };
+
+  // 健康度：只看这一轮到底有没有真的抓成功，避免心跳在全部失败时仍然报"正常"。
+  state.lastCycleAt = now().toISOString();
+  if (okCount > 0) {
+    state.lastSuccessAt = state.lastCycleAt;
+    state.failStreak = 0;
+    state.failAlertAt = null;
+  } else if (failCount > 0) {
+    state.failStreak = (Number(state.failStreak) || 0) + 1;
   }
+  if (pushedTotal > 0) state.lastPushAt = now().toISOString();
+
+  await maybeFailureAlert({ state, cycle, logger, dryRun, sendMessage, now });
+  if (!stopRemaining && !state.authPausedUntil && !state.backoffUntil) {
+    await maybeHeartbeat({ config, state, cycle, logger, dryRun, sendMessage, now });
+  }
+  await maybeCookieExpiryAlert({ state, expiry: cookieExpiry, logger, dryRun, sendMessage, now });
 
   if (!dryRun) await saveState();
-  return { results };
+  return { results, cycle };
 }
