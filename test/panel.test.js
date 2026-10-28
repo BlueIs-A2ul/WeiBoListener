@@ -32,6 +32,17 @@ test('toast 容器不吃点击（曾挡住右下角按钮）', () => {
   assert.match(toast[1], /pointer-events:\s*auto/);
 });
 
+test('编辑已有站点时，不重新抓取也能预览/保存', () => {
+  assert.match(html, /③ 现有字段/);
+});
+
+test('站点卡片支持编辑已有站点，且编辑不重建基线', () => {
+  assert.match(html, /openSiteEditor/);
+  assert.match(html, /openWizard\(/);
+  assert.match(html, /保存修改/);
+  assert.match(html, /已保留原有已见记录/);
+});
+
 test('面板脚本可以正常解析（无语法错误）', () => {
   const script = html.match(/<script>([\s\S]*)<\/script>/);
   assert.ok(script, '找不到内联脚本');

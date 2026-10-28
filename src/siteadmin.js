@@ -131,11 +131,15 @@ async function previewSite(ctx, site, cookie) {
 /** 探测：拿 URL + Cookie 真实请求一次，分析响应结构并给出建议配置。 */
 export async function probe(ctx, req) {
   const body = (await ctx.readJson(req)) || {};
+  const cookieFallback = Boolean(body.cookieEnv);
   const url = String(body.url || '').trim();
   if (!url) throw fail(400, '请填写要监听的请求地址（带上 ?termCode= 这类查询参数）');
 
   const headers = sanitizeHeaders(body.headers);
-  const cookie = String(body.cookie || '').trim();
+  const envFile = cookieFallback ? await ctx.readEnvFile(ctx.root) : null;
+  const cookie =
+    String(body.cookie || '').trim() ||
+    (cookieFallback && body.cookieEnv ? siteCookieFromEnv(envFile, { request: { cookieEnv: body.cookieEnv } }) : '');
   const method = String(body.method || 'GET').toUpperCase();
   const encoding = String(body.encoding || 'auto');
 

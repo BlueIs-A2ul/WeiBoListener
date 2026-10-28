@@ -936,6 +936,7 @@
 
   const wizard = {
     open: false,
+    editing: null,
     draft: null,
     headersText: '',
     cookie: '',
@@ -1089,6 +1090,28 @@
     return rows;
   }
 
+  function openWizard(existing) {
+    wizard.draft = existing ? JSON.parse(JSON.stringify(existing)) : blankDraft();
+    wizard.editing = existing ? existing.id : null;
+    const headers = wizard.draft.request?.headers || {};
+    wizard.headersText = Object.entries(headers).map(([key, value]) => key + ': ' + value).join('\n');
+    wizard.cookie = '';
+    wizard.probe = null;
+    wizard.preview = null;
+    wizard.error = '';
+    wizard.chosen = 0;
+    wizard.open = true;
+    renderWizard();
+    const box = $('#siteWizard');
+    if (box && box.scrollIntoView) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function openSiteEditor(site) {
+    const full = (state.config?.sites || []).find((item) => item.id === site.id);
+    if (!full) { toast('config.json 里找不到这个站点，请刷新页面', 'warn'); return; }
+    openWizard(full);
+  }
+
   async function runProbe(button) {
     const draft = wizard.draft;
     wizard.error = '';
@@ -1106,6 +1129,7 @@
           method: draft.request.method,
           headers: headerTextToObject(wizard.headersText),
           cookie: wizard.cookie.trim(),
+          cookieEnv: draft.request.cookieEnv || cookieKeyFor(draft.id),
           encoding: draft.request.encoding,
         },
       });
@@ -1160,14 +1184,19 @@
       state.configMtime = result.mtimeMs;
 
       let baselineNote = '';
-      try {
-        const baseline = await api('/api/site/baseline', { method: 'POST', body: { siteId: result.site.id } });
-        baselineNote = ' · 已建立基线 ' + baseline.count + ' 条';
-      } catch (error) {
-        baselineNote = ' · 基线将在监听下次启动时建立';
+      if (!wizard.editing) {
+        try {
+          const baseline = await api('/api/site/baseline', { method: 'POST', body: { siteId: result.site.id } });
+          baselineNote = ' · 已建立基线 ' + baseline.count + ' 条';
+        } catch (error) {
+          baselineNote = ' · 基线将在监听下次启动时建立';
+        }
+      } else {
+        baselineNote = ' · 已保留原有已见记录';
       }
 
       wizard.open = false;
+      wizard.editing = null;
       wizard.draft = null;
       wizard.probe = null;
       wizard.preview = null;
@@ -1202,12 +1231,15 @@
       h('div', { class: 'card-head' },
         h('div', {},
           h('h2', {}, '① 填请求'),
-          h('p', { class: 'hint' }, '浏览器登录后按 F12 → Network → 找到返回 JSON 的那条请求，复制完整地址（带 ?termCode=…）和整行 Cookie')),
+          h('p', { class: 'hint' }, wizard.editing
+          ? '正在编辑站点「' + wizard.editing + '」：Cookie 留空就沿用 .env 里已有的；改完字段记得先「预览推送」再保存'
+          : '浏览器登录后按 F12 → Network → 找到返回 JSON 的那条请求，复制完整地址（带 ?termCode=…）和整行 Cookie')),
         h('button', {
           class: 'btn small ghost',
           type: 'button',
           onclick: () => {
             wizard.open = false;
+            wizard.editing = null;
             wizard.draft = null;
             wizard.probe = null;
             wizard.preview = null;
@@ -1317,9 +1349,23 @@
         ),
         h('div', { class: 'actions' },
           h('button', { id: 'wz-preview', class: 'btn', type: 'button', onclick: (event) => runPreview(event.currentTarget) }, '④ 预览推送'),
-          h('button', { id: 'wz-save', class: 'btn primary', type: 'button', onclick: (event) => runSave(event.currentTarget) }, '保存并建立基线'),
+          h('button', { id: 'wz-save', class: 'btn primary', type: 'button', onclick: (event) => runSave(event.currentTarget) }, wizard.editing ? '保存修改' : '保存并建立基线'),
         ),
         h('p', { class: 'hint' }, '保存后会重启监听；首次运行只把当前条目记为基线，不会把历史条目推一遍。'),
+      ));
+    }
+
+    if ((!probe || !probe.ok || probe.kind !== 'json') && wizard.draft && wizard.draft.select && wizard.draft.select.items) {
+      nodes.push(h('div', { class: 'card' },
+        h('h2', {}, '③ 现有字段'),
+        h('p', { class: 'hint' },
+          '条目路径 ' + wizard.draft.select.items
+          + ' · 唯一 ID ' + (wizard.draft.select.id || '（未设置）')
+          + '。要改字段就先点「② 抓取并分析」；也可以直接预览或保存。'),
+        h('div', { class: 'actions', style: 'margin-bottom:0' },
+          h('button', { id: 'wz-preview', class: 'btn', type: 'button', onclick: (event) => runPreview(event.currentTarget) }, '④ 预览推送'),
+          h('button', { id: 'wz-save', class: 'btn primary', type: 'button', onclick: (event) => runSave(event.currentTarget) }, wizard.editing ? '保存修改' : '保存并建立基线'),
+        ),
       ));
     }
 
@@ -1369,6 +1415,7 @@
         site.cookieEnv ? h('span', { class: 'muted mono' }, site.cookieEnv) : null,
       ),
       h('div', { class: 'actions', style: 'margin:12px 0 0' },
+        site.inConfig ? h('button', { class: 'btn small', type: 'button', onclick: () => openSiteEditor(site) }, '编辑') : null,
         h('button', { class: 'btn small', type: 'button', onclick: (event) => runSiteTest(event.currentTarget, site) }, '试跑'),
         h('button', { class: 'btn small ghost', type: 'button', onclick: (event) => runSiteBaseline(event.currentTarget, site) }, '重建基线'),
         h('button', {
@@ -1544,18 +1591,7 @@
       if (placeholder) placeholder.remove();
       container.append(postRow({ enabled: true }));
     });
-    $('#addSite').addEventListener('click', () => {
-      wizard.draft = blankDraft();
-      wizard.headersText = 'Accept-Language: zh-CN,zh;q=0.9';
-      wizard.cookie = '';
-      wizard.probe = null;
-      wizard.preview = null;
-      wizard.error = '';
-      wizard.chosen = 0;
-      wizard.open = true;
-      renderWizard();
-      $('#siteWizard').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
+    $('#addSite').addEventListener('click', () => openWizard());
 
     $('#heartbeatEnabled').addEventListener('change', (event) => {
       $('#heartbeatHour').disabled = !event.target.checked;

@@ -26,6 +26,16 @@ async function startUpstream() {
       res.end('<html><head><title>统一身份认证</title></head><body>请登录</body></html>');
       return;
     }
+    if (req.url.startsWith('/secure')) {
+      if (!String(req.headers.cookie || '').includes('SID=fake')) {
+        res.writeHead(401, { 'content-type': 'text/plain' });
+        res.end('need login');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json;charset=UTF-8' });
+      res.end(JSON.stringify(UPSTREAM));
+      return;
+    }
     if (req.url.startsWith('/exams')) {
       res.writeHead(200, { 'content-type': 'application/json;charset=UTF-8' });
       res.end(JSON.stringify(UPSTREAM));
@@ -157,6 +167,22 @@ test('POST /api/probe 遇到登录页时提示 Cookie 可能失效', async () =>
   });
 });
 
+test('POST /api/probe 未粘贴 Cookie 时回退到站点的 .env 键（编辑已有站点用）', async () => {
+  await withServers({}, async ({ base, upstream }) => {
+    const withoutCookie = await call(base, '/api/probe', { method: 'POST', body: { url: `${upstream}/secure` } });
+    assert.equal(withoutCookie.json.ok, false);
+    assert.equal(withoutCookie.json.code, 'HTTP_AUTH');
+    assert.equal(withoutCookie.json.authHint, true);
+
+    const fallback = await call(base, '/api/probe', {
+      method: 'POST',
+      body: { url: `${upstream}/secure`, cookieEnv: 'SITE_FAKE_EXAMS_COOKIE' },
+    });
+    assert.equal(fallback.json.ok, true);
+    assert.equal(fallback.json.analysis.candidates[0].path, 'datas');
+  });
+});
+
 test('POST /api/probe 地址非法时返回可读错误', async () => {
   await withServers({}, async ({ base }) => {
     const response = await call(base, '/api/probe', { method: 'POST', body: { url: 'ftp://example.cn/x' } });
@@ -191,6 +217,18 @@ test('POST /api/site/preview 用草稿真实抓取并渲染文案', async () => 
     const content = response.json.messages[0];
     assert.match(content, /【草稿站点】新增 2 条/);
     assert.match(content, /考场：思学楼B208/);
+  });
+});
+
+test('POST /api/site/preview 不传 Cookie 时用站点 .env 里的值（编辑场景）', async () => {
+  await withServers({}, async ({ base }) => {
+    const current = await call(base, '/api/config');
+    const site = current.json.config.sites[0];
+
+    const response = await call(base, '/api/site/preview', { method: 'POST', body: { site } });
+    assert.equal(response.status, 200);
+    assert.equal(response.json.total, 2);
+    assert.equal(response.json.messages.length, 1);
   });
 });
 
@@ -275,6 +313,26 @@ test('POST /api/sites 局部更新（停用/换 Cookie）不会丢掉站点的�
     const config = JSON.parse(await fs.readFile(path.join(root, 'config.json'), 'utf8'));
     assert.equal(config.sites[0].enabled, false);
     assert.equal(config.sites[0].success.path, 'code');
+  });
+});
+
+test('POST /api/sites 可以用来给已有站点补字段（编辑后保存）', async () => {
+  await withServers({}, async ({ root, base }) => {
+    const current = await call(base, '/api/config');
+    const site = {
+      ...current.json.config.sites[0],
+      select: {
+        ...current.json.config.sites[0].select,
+        fields: [{ path: 'examPlace', label: '考场' }],
+      },
+    };
+
+    const response = await call(base, '/api/sites', { method: 'POST', body: { site, mtimeMs: current.json.mtimeMs } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.json.site.select.fields, [{ path: 'examPlace', label: '考场' }]);
+
+    const saved = JSON.parse(await fs.readFile(path.join(root, 'config.json'), 'utf8'));
+    assert.equal(saved.sites[0].select.fields[0].label, '考场');
   });
 });
 
