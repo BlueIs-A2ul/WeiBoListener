@@ -16,11 +16,28 @@ export function createPostState() {
   };
 }
 
+export function createSiteState() {
+  return {
+    baselineDone: false,
+    baselineAt: null,
+    baselineCount: null,
+    seen: [],
+    lastPollAt: null,
+    lastNewAt: null,
+    lastPushAt: null,
+    lastError: null,
+    authPausedUntil: null,
+    backoffUntil: null,
+    authAlertAt: null,
+  };
+}
+
 export function createEmptyState() {
   return {
-    version: 1,
+    version: 2,
     updatedAt: null,
     posts: {},
+    sites: {},
     authPausedUntil: null,
     authAlertAt: null,
     backoffUntil: null,
@@ -60,6 +77,18 @@ function normalizePostState(raw) {
   };
 }
 
+function normalizeSiteState(raw) {
+  const state = raw && typeof raw === 'object' ? raw : {};
+  return {
+    ...createSiteState(),
+    ...state,
+    baselineDone: Boolean(state.baselineDone),
+    baselineCount: Number.isFinite(state.baselineCount) ? state.baselineCount : null,
+    seen: Array.isArray(state.seen) ? state.seen.map((id) => String(id)) : [],
+    lastError: state.lastError && typeof state.lastError === 'object' ? state.lastError : null,
+  };
+}
+
 export function normalizeState(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const state = createEmptyState();
@@ -72,6 +101,12 @@ export function normalizeState(raw) {
   if (source.posts && typeof source.posts === 'object' && !Array.isArray(source.posts)) {
     for (const [postId, postState] of Object.entries(source.posts)) {
       state.posts[String(postId)] = normalizePostState(postState);
+    }
+  }
+
+  if (source.sites && typeof source.sites === 'object' && !Array.isArray(source.sites)) {
+    for (const [siteId, siteState] of Object.entries(source.sites)) {
+      state.sites[String(siteId)] = normalizeSiteState(siteState);
     }
   }
   return state;
@@ -109,7 +144,7 @@ export async function saveState(file, state) {
   const dir = path.dirname(file);
   await fs.mkdir(dir, { recursive: true });
 
-  state.version = 1;
+  state.version = 2;
   state.updatedAt = new Date().toISOString();
   const text = `${JSON.stringify(state, null, 2)}\n`;
   const tmpFile = `${file}.tmp`;
@@ -143,6 +178,21 @@ export function ensurePostState(state, postId) {
 
 export function seenSet(postState) {
   return new Set((postState.seen || []).map((id) => String(id)));
+}
+
+export function ensureSiteState(state, siteId) {
+  const key = String(siteId);
+  if (!state.sites) state.sites = {};
+  if (!state.sites[key]) state.sites[key] = createSiteState();
+  return state.sites[key];
+}
+
+export function siteSeenSet(siteState) {
+  return new Set((siteState.seen || []).map((id) => String(id)));
+}
+
+export function markSiteSeen(siteState, ids, maxSeen = 20000) {
+  markSeen(siteState, ids, maxSeen);
 }
 
 export function markSeen(postState, ids, maxSeen = 20000) {

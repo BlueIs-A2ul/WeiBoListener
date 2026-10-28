@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { maybeStartupAlert } from './alerts.js';
 import { getEnvConfig, loadConfig } from './config.js';
 import { loadDotEnv } from './env.js';
+import { extractItems } from './extract.js';
+import { formatSiteMessages } from './format.js';
+import { fetchDocument } from './http.js';
 import { createLogger } from './logger.js';
 import { acquireLock } from './lock.js';
 import { sendWxPusher } from './notify.js';
@@ -16,14 +19,20 @@ import { fetchApprovalPage, fetchStatusMeta, parseCookieExpiry } from './weibo.j
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function parseArgs(argv) {
-  const args = { once: false, dryRun: false, config: null, help: false, testPush: false };
+  const args = { once: false, dryRun: false, config: null, help: false, testPush: false, testSite: null };
 
   for (let index = 2; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--once') args.once = true;
     else if (arg === '--dry-run') args.dryRun = true;
     else if (arg === '--test-push') args.testPush = true;
-    else if (arg === '--help' || arg === '-h') args.help = true;
+    else if (arg === '--test-site') {
+      args.testSite = argv[index + 1];
+      if (!args.testSite) throw new Error('--test-site 后面需要跟站点 ID，例如 --test-site swpu-exams');
+      index += 1;
+    } else if (arg.startsWith('--test-site=')) {
+      args.testSite = arg.slice('--test-site='.length);
+    } else if (arg === '--help' || arg === '-h') args.help = true;
     else if (arg === '--config') {
       args.config = argv[index + 1];
       if (!args.config) throw new Error('--config 后面需要跟配置文件路径');
@@ -45,11 +54,12 @@ function printHelp() {
   node src/index.js --dry-run       只打印将要推送的内容，不写状态、不发消息
   node src/index.js --dry-run --once
   node src/index.js --test-push     只发一条 WxPusher 测试消息
+  node src/index.js --test-site=ID  试抓一个站点：打印条目与推送示例，不写状态、不推送
   node src/index.js --config=path   指定配置文件
 
 配置：
-  config.json   微博列表、轮询间隔、过滤关键词
-  .env          WEIBO_COOKIE、WXPUSHER_APP_TOKEN、WXPUSHER_UIDS`);
+  config.json   微博列表（posts）、通用站点（sites）、轮询间隔、过滤关键词
+  .env          WEIBO_COOKIE、WXPUSHER_APP_TOKEN、WXPUSHER_UIDS、各站点自己的 SITE_*_COOKIE`);
 }
 
 function sleep(ms) {
@@ -90,11 +100,11 @@ async function sendStartupMessage({ config, logger, dryRun, sendMessage, pollRes
   if (!config.notifyOnStart) return;
 
   const enabledPosts = config.posts.filter((post) => post.enabled);
-  const lines = [
-    '微博监听已启动',
-    `监控：${enabledPosts.length} 条微博`,
-    `轮询间隔：${Math.round(config.pollIntervalSec / 60)} 分钟`,
-  ];
+  const enabledSites = (config.sites || []).filter((site) => site.enabled);
+  const title = enabledPosts.length > 0 ? '微博监听已启动' : '站点监听已启动';
+  const lines = [title, `监控：${enabledPosts.length} 条微博`];
+  if (enabledSites.length > 0) lines.push(`站点：${enabledSites.length} 个`);
+  lines.push(`轮询间隔：${Math.round(config.pollIntervalSec / 60)} 分钟`);
 
   if (pollResult.skipped === 'auth') {
     lines.push('状态：Cookie 失效，已暂停轮询');
@@ -121,10 +131,71 @@ async function sendStartupMessage({ config, logger, dryRun, sendMessage, pollRes
   }
 
   try {
-    await sendMessage({ content, summary: '微博监听已启动' });
+    await sendMessage({ content, summary: title });
     logger.info('启动消息已发送');
   } catch (err) {
     logger.error('启动消息发送失败', { error: err.message });
+  }
+}
+
+/**
+ * 试抓一个站点：用 .env 里该站点的 Cookie 真实请求一次，打印条目与推送示例。
+ * 不写状态、不落盘、不推送，专门用来验证配置。
+ */
+async function runTestSite({ siteId, config, logger }) {
+  const site = (config.sites || []).find((item) => item.id === siteId);
+  if (!site) {
+    logger.error(`没有找到站点 ${siteId}；当前配置里的站点：${(config.sites || []).map((item) => item.id).join(', ') || '（无）'}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const cookie = String(process.env[site.request.cookieEnv] || '').trim();
+  if (!cookie) {
+    logger.error(`站点「${site.name}」还没有配置 Cookie：请在 .env 中设置 ${site.request.cookieEnv}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const doc = await fetchDocument({
+      url: site.request.url,
+      method: site.request.method,
+      headers: site.request.headers,
+      cookie,
+      body: site.request.body,
+      timeoutMs: site.request.timeoutMs ?? config.requestTimeoutMs,
+      encoding: site.request.encoding,
+    });
+    logger.info(
+      `[${site.name}] HTTP ${doc.status} · ${doc.contentType || '未知类型'} · ${doc.bytes} 字节 · ${doc.ms}ms · 编码 ${doc.encoding}`,
+    );
+
+    const baseUrl = new URL(site.request.url).origin;
+    const items = extractItems({ site, body: doc.text, baseUrl });
+    logger.info(`[${site.name}] 解析到 ${items.length} 条（模式 ${site.mode}，条目路径 ${site.select.items}）`);
+
+    for (const item of items.slice(0, 5)) {
+      const extra = (item.fields || []).map((field) => `${field.label}=${field.value}`).join(' | ');
+      logger.info(`  · ${[item.title || '(无标题)', item.time, extra].filter(Boolean).join(' | ')}  [id=${item.id}]`);
+    }
+
+    if (items.length === 0) {
+      logger.info('本次没有返回任何条目（空列表是合法结果，例如新学期还没有安排）。');
+      return;
+    }
+
+    const messages = formatSiteMessages(site, items.slice(0, 3), {
+      maxItemsPerMessage: site.maxItemsPerMessage,
+      maxChars: config.maxCommentChars,
+    });
+    for (const message of messages) {
+      logger.info(`[${site.name}] 推送示例：\n${message.content}`);
+    }
+    logger.info('以上只是示例：没有写入状态，也没有发送推送。');
+  } catch (err) {
+    logger.error(`[${site.name}] 试抓失败：${err.message}`, { code: err.code || null });
+    process.exitCode = 1;
   }
 }
 
@@ -160,7 +231,7 @@ async function main() {
   logger.info(`微博监听启动（Node ${process.version}，${process.platform}）`);
   logger.info(`配置文件：${configPath}`);
   logger.info(
-    `监控 ${config.posts.filter((post) => post.enabled).length} 条微博，轮询间隔 ${config.pollIntervalSec} 秒，抖动 ±${config.jitterSec} 秒${args.dryRun ? '，dry-run 模式' : ''}`,
+    `监控 ${config.posts.filter((post) => post.enabled).length} 条微博、${(config.sites || []).filter((site) => site.enabled).length} 个站点，轮询间隔 ${config.pollIntervalSec} 秒，抖动 ±${config.jitterSec} 秒${args.dryRun ? '，dry-run 模式' : ''}`,
   );
 
   const stateFile = path.resolve(ROOT, config.stateFile);
@@ -200,7 +271,17 @@ async function main() {
     return;
   }
 
-  if (!env.cookie) {
+  if (args.testSite) {
+    await runTestSite({ siteId: args.testSite, config, logger });
+    return;
+  }
+
+  const cookieForSite = (site) => String(process.env[site.request.cookieEnv] || '').trim();
+  const enabledPosts = config.posts.filter((item) => item.enabled);
+  const enabledSites = (config.sites || []).filter((item) => item.enabled);
+
+  // 只有真的在监听微博时才要求 WEIBO_COOKIE；只配站点时不需要微博 Cookie
+  if (!env.cookie && enabledPosts.length > 0) {
     logger.error('缺少 WEIBO_COOKIE。请复制 .env.example 为 .env 并填入微博 Cookie');
     await maybeStartupAlert({
       state,
@@ -222,7 +303,7 @@ async function main() {
     return;
   }
 
-  logCookieExpiry(env.cookie, logger);
+  if (env.cookie) logCookieExpiry(env.cookie, logger);
 
   if (state.authPausedUntil || state.backoffUntil) {
     logger.info('启动时清除上次的暂停/退避状态（如果 Cookie 已更新，可立即恢复）');
@@ -315,7 +396,9 @@ async function main() {
         saveState: saveCurrentState,
         now: () => new Date(),
         sleep,
-        cookieExpiry: parseCookieExpiry(env.cookie),
+        cookieExpiry: env.cookie ? parseCookieExpiry(env.cookie) : null,
+        cookieForSite,
+        fetchDocumentImpl: fetchDocument,
       });
 
       if (firstCycle) {

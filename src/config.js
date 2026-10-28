@@ -22,12 +22,28 @@ export const DEFAULT_CONFIG = Object.freeze({
   logDir: 'logs',
   logLevel: 'info',
   posts: [],
+  sites: [],
   filters: {
     excludeKeywords: [],
   },
 });
 
 const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+const SITE_MODES = new Set(['json']);
+const SITE_ENCODINGS = new Set(['auto', 'utf-8', 'gbk', 'gb18030']);
+const HTTP_METHODS = new Set(['GET', 'POST']);
+
+/** 站点 ID 只允许小写字母/数字/短横线：它会被派生成本地 .env 里的键名。 */
+export const SITE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+/** 站点 Cookie 在 .env 里的键名，例如 swpu-exams → SITE_SWPU_EXAMS_COOKIE。 */
+export function siteCookieKey(siteId) {
+  const normalized = String(siteId ?? '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `SITE_${normalized || 'SITE'}_COOKIE`;
+}
 
 function readInt(value, fallback, name, { min, max } = {}) {
   const n = value === undefined || value === null || value === '' ? fallback : Number(value);
@@ -41,6 +57,171 @@ function readString(value, fallback, name) {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value !== 'string') throw new ConfigError(`${name} 必须是字符串`);
   return value;
+}
+
+/** 校验并归一化一个站点（通用站点监听，当前只支持 JSON 模式）。 */
+function normalizeSite(raw, index, seenIds) {
+  const label = `sites[${index}]`;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ConfigError(`${label} 必须是对象`);
+  }
+
+  const id = String(raw.id ?? '').trim();
+  if (!SITE_ID_PATTERN.test(id)) {
+    throw new ConfigError(`${label}.id 只能用小写字母、数字和短横线（会用来生成 .env 键名），例如 jwc-notice`);
+  }
+  if (seenIds.has(id)) throw new ConfigError(`sites 中存在重复的站点 ID：${id}`);
+  seenIds.add(id);
+
+  const mode = String(raw.mode ?? 'json').trim().toLowerCase();
+  if (!SITE_MODES.has(mode)) {
+    throw new ConfigError(`${label}.mode 目前只支持 json（收到：${raw.mode}）`);
+  }
+
+  const requestRaw = raw.request;
+  if (!requestRaw || typeof requestRaw !== 'object' || Array.isArray(requestRaw)) {
+    throw new ConfigError(`${label}.request 必须是对象`);
+  }
+  const url = String(requestRaw.url ?? '').trim();
+  if (!url) throw new ConfigError(`${label}.request.url 不能为空`);
+  if (!/^https?:\/\//i.test(url)) throw new ConfigError(`${label}.request.url 必须是 http/https 地址`);
+
+  const method = String(requestRaw.method ?? 'GET').trim().toUpperCase();
+  if (!HTTP_METHODS.has(method)) throw new ConfigError(`${label}.request.method 只支持 GET / POST`);
+
+  const headers = {};
+  if (requestRaw.headers !== undefined && requestRaw.headers !== null) {
+    if (typeof requestRaw.headers !== 'object' || Array.isArray(requestRaw.headers)) {
+      throw new ConfigError(`${label}.request.headers 必须是对象，例如 { "Referer": "https://..." }`);
+    }
+    for (const [key, value] of Object.entries(requestRaw.headers)) {
+      const name = String(key).trim();
+      if (!name || /[\s:]/.test(name)) throw new ConfigError(`${label}.request.headers 里的名称不合法：${key}`);
+      if (value === undefined || value === null) continue;
+      headers[name] = String(value);
+    }
+  }
+
+  const body =
+    requestRaw.body === undefined || requestRaw.body === null || requestRaw.body === ''
+      ? null
+      : String(requestRaw.body);
+
+  const cookieEnv = String(requestRaw.cookieEnv ?? '').trim() || siteCookieKey(id);
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(cookieEnv)) {
+    throw new ConfigError(`${label}.request.cookieEnv 必须是合法的环境变量名（字母、数字、下划线）`);
+  }
+
+  const timeoutRaw = requestRaw.timeoutMs;
+  const timeoutMs =
+    timeoutRaw === undefined || timeoutRaw === null || timeoutRaw === ''
+      ? null
+      : readInt(timeoutRaw, null, `${label}.request.timeoutMs`, { min: 5000, max: 120000 });
+
+  const encoding = String(requestRaw.encoding ?? 'auto').trim().toLowerCase();
+  if (!SITE_ENCODINGS.has(encoding)) {
+    throw new ConfigError(`${label}.request.encoding 必须是 auto / utf-8 / gbk / gb18030 之一`);
+  }
+
+  let success = null;
+  if (raw.success !== undefined && raw.success !== null) {
+    const successRaw = raw.success;
+    if (typeof successRaw !== 'object' || Array.isArray(successRaw)) {
+      throw new ConfigError(`${label}.success 必须是对象，例如 { "path": "code", "equals": "0" }`);
+    }
+    const path = String(successRaw.path ?? '').trim();
+    if (!path) throw new ConfigError(`${label}.success.path 不能为空`);
+    if (successRaw.equals === undefined || successRaw.equals === null) {
+      throw new ConfigError(`${label}.success.equals 不能为空（例如 0 或 "success"）`);
+    }
+    success = {
+      path,
+      equals: String(successRaw.equals),
+      messagePath:
+        successRaw.messagePath === undefined || successRaw.messagePath === null || successRaw.messagePath === ''
+          ? null
+          : String(successRaw.messagePath).trim(),
+    };
+  }
+
+  const selectRaw = raw.select;
+  if (!selectRaw || typeof selectRaw !== 'object' || Array.isArray(selectRaw)) {
+    throw new ConfigError(`${label}.select 必须是对象`);
+  }
+  const items = String(selectRaw.items ?? '').trim();
+  if (!items) throw new ConfigError(`${label}.select.items 不能为空，例如 datas 或 data.list`);
+  const idPath = String(selectRaw.id ?? '').trim();
+  if (!idPath) throw new ConfigError(`${label}.select.id 不能为空，例如 taskId 或 id`);
+
+  const optionalPath = (value) => {
+    const text = String(value ?? '').trim();
+    return text === '' ? null : text;
+  };
+
+  const fieldsRaw = selectRaw.fields === undefined || selectRaw.fields === null ? [] : selectRaw.fields;
+  if (!Array.isArray(fieldsRaw)) throw new ConfigError(`${label}.select.fields 必须是数组`);
+  const fields = fieldsRaw.map((field, fieldIndex) => {
+    if (!field || typeof field !== 'object' || Array.isArray(field)) {
+      throw new ConfigError(`${label}.select.fields[${fieldIndex}] 必须是对象`);
+    }
+    const path = String(field.path ?? '').trim();
+    if (!path) throw new ConfigError(`${label}.select.fields[${fieldIndex}].path 不能为空`);
+    const fieldLabel = String(field.label ?? '').trim() || path;
+    return { path, label: fieldLabel };
+  });
+
+  const filtersRaw = raw.filters && typeof raw.filters === 'object' ? raw.filters : {};
+  const readKeywords = (value, name) => {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) throw new ConfigError(`${label}.filters.${name} 必须是数组`);
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  };
+
+  const intervalRaw = raw.pollIntervalSec;
+  const pollIntervalSec =
+    intervalRaw === undefined || intervalRaw === null || intervalRaw === ''
+      ? null
+      : readInt(intervalRaw, null, `${label}.pollIntervalSec`, { min: 60, max: 86400 });
+
+  const notifyOnBaseline = raw.notifyOnBaseline === undefined ? false : Boolean(raw.notifyOnBaseline);
+  const maxItems = readInt(raw.maxItems, 200, `${label}.maxItems`, { min: 1, max: 1000 });
+  const maxItemsPerMessage = readInt(raw.maxItemsPerMessage, 10, `${label}.maxItemsPerMessage`, {
+    min: 1,
+    max: 50,
+  });
+
+  const messageRaw = raw.message && typeof raw.message === 'object' ? raw.message : {};
+  const message = {
+    header: typeof messageRaw.header === 'string' && messageRaw.header.trim() !== '' ? messageRaw.header.trim() : null,
+    item: typeof messageRaw.item === 'string' && messageRaw.item.trim() !== '' ? messageRaw.item : null,
+  };
+
+  return {
+    id,
+    name: String(raw.name ?? '').trim() || `站点 ${id}`,
+    enabled: raw.enabled === undefined ? true : Boolean(raw.enabled),
+    mode,
+    request: { url, method, headers, body, cookieEnv, timeoutMs, encoding },
+    success,
+    select: {
+      items,
+      id: idPath,
+      title: optionalPath(selectRaw.title),
+      time: optionalPath(selectRaw.time),
+      link: optionalPath(selectRaw.link),
+      text: optionalPath(selectRaw.text),
+      fields,
+    },
+    filters: {
+      includeKeywords: readKeywords(filtersRaw.includeKeywords, 'includeKeywords'),
+      excludeKeywords: readKeywords(filtersRaw.excludeKeywords, 'excludeKeywords'),
+    },
+    pollIntervalSec,
+    notifyOnBaseline,
+    maxItems,
+    maxItemsPerMessage,
+    message,
+  };
 }
 
 export function normalizeConfig(input = {}) {
@@ -73,8 +254,13 @@ export function normalizeConfig(input = {}) {
   }
 
   const rawPosts = input.posts === undefined ? DEFAULT_CONFIG.posts : input.posts;
-  if (!Array.isArray(rawPosts) || rawPosts.length === 0) {
-    throw new ConfigError('posts 必须是非空数组，至少配置一条微博');
+  if (!Array.isArray(rawPosts)) throw new ConfigError('posts 必须是数组（可以为空，但此时必须配置 sites）');
+
+  const rawSites = input.sites === undefined ? DEFAULT_CONFIG.sites : input.sites;
+  if (!Array.isArray(rawSites)) throw new ConfigError('sites 必须是数组');
+
+  if (rawPosts.length === 0 && rawSites.length === 0) {
+    throw new ConfigError('至少要配置一条微博（posts）或一个站点（sites）');
   }
 
   const seenIds = new Set();
@@ -99,6 +285,9 @@ export function normalizeConfig(input = {}) {
     .map((item) => String(item).trim())
     .filter(Boolean);
 
+  const seenSiteIds = new Set();
+  const sites = rawSites.map((raw, index) => normalizeSite(raw, index, seenSiteIds));
+
   return {
     pollIntervalSec,
     jitterSec,
@@ -114,6 +303,7 @@ export function normalizeConfig(input = {}) {
     logDir,
     logLevel,
     posts,
+    sites,
     filters: { excludeKeywords },
   };
 }

@@ -14,6 +14,7 @@ import {
   maybeHeartbeat,
 } from './alerts.js';
 import { ensurePostState, markSeen, seenSet } from './state.js';
+import { pollSites } from './watch.js';
 
 function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -198,6 +199,9 @@ export async function pollAll({
   now = () => new Date(),
   sleep = defaultSleep,
   cookieExpiry = null,
+  // 通用站点（config.sites）：cookieForSite 按站点读取各自的 .env 键
+  cookieForSite = () => '',
+  fetchDocumentImpl,
 }) {
   const current = now();
 
@@ -276,15 +280,48 @@ export async function pollAll({
     if (index < posts.length - 1) await sleep(1000 + Math.floor(Math.random() * 1000));
   }
 
-  const cycle = { posts: posts.length, ok: okCount, failed: failCount, skipped: skippedCount, lastError };
+  // 通用站点：与微博互不影响，单个站点失败只记在它自己的状态里
+  let siteResults = [];
+  let siteCycle = { total: 0, ok: 0, failed: 0, skipped: 0, lastError: null };
+  const enabledSites = (config.sites || []).filter((site) => site.enabled);
+  if (enabledSites.length > 0) {
+    const outcome = await pollSites({
+      sites: enabledSites,
+      config,
+      state,
+      logger,
+      dryRun,
+      cookieForSite,
+      sendMessage,
+      saveState,
+      now,
+      sleep,
+      fetchDocumentImpl,
+    });
+    siteResults = outcome.results;
+    siteCycle = outcome.cycle;
+    pushedTotal += siteResults.reduce((sum, item) => sum + (Number(item.pushed) || 0), 0);
+  }
+
+  const totalOk = okCount + siteCycle.ok;
+  const totalFailed = failCount + siteCycle.failed;
+  const cycle = {
+    posts: posts.length,
+    sites: siteCycle.total,
+    ok: totalOk,
+    failed: totalFailed,
+    skipped: skippedCount + siteCycle.skipped,
+    lastError: lastError || siteCycle.lastError,
+    siteResults: { ok: siteCycle.ok, failed: siteCycle.failed, skipped: siteCycle.skipped },
+  };
 
   // 健康度：只看这一轮到底有没有真的抓成功，避免心跳在全部失败时仍然报"正常"。
   state.lastCycleAt = now().toISOString();
-  if (okCount > 0) {
+  if (totalOk > 0) {
     state.lastSuccessAt = state.lastCycleAt;
     state.failStreak = 0;
     state.failAlertAt = null;
-  } else if (failCount > 0) {
+  } else if (totalFailed > 0) {
     state.failStreak = (Number(state.failStreak) || 0) + 1;
   }
   if (pushedTotal > 0) state.lastPushAt = now().toISOString();
@@ -296,5 +333,5 @@ export async function pollAll({
   await maybeCookieExpiryAlert({ state, expiry: cookieExpiry, logger, dryRun, sendMessage, now });
 
   if (!dryRun) await saveState();
-  return { results, cycle };
+  return { results, siteResults, cycle };
 }

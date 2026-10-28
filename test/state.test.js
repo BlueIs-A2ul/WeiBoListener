@@ -7,8 +7,10 @@ import path from 'node:path';
 import {
   createEmptyState,
   ensurePostState,
+  ensureSiteState,
   loadState,
   markSeen,
+  markSiteSeen,
   saveState,
 } from '../src/state.js';
 
@@ -61,3 +63,72 @@ test('最终状态为空时返回空结构', async (t) => {
   assert.deepEqual(loaded.state.posts, {});
   assert.equal(loaded.recoveredFrom, null);
 });
+
+
+// ---------------------------------------------------------------- 通用站点（sites）
+
+test('站点状态可以保存并重新加载', async (t) => {
+  const dir = await tempDir(t);
+  const file = path.join(dir, 'state.json');
+  const state = createEmptyState();
+  const siteState = ensureSiteState(state, 'swpu-exams');
+  siteState.baselineDone = true;
+  siteState.baselineCount = 3;
+  markSiteSeen(siteState, ['a', 'b']);
+
+  await saveState(file, state);
+  const loaded = await loadState(file);
+
+  assert.equal(loaded.state.version, 2);
+  assert.equal(loaded.state.sites['swpu-exams'].baselineDone, true);
+  assert.equal(loaded.state.sites['swpu-exams'].baselineCount, 3);
+  assert.deepEqual(loaded.state.sites['swpu-exams'].seen, ['a', 'b']);
+});
+
+test('旧版状态文件（只有 posts）可以直接读，sites 为空对象', async (t) => {
+  const dir = await tempDir(t);
+  const file = path.join(dir, 'state.json');
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      version: 1,
+      posts: { '123': { baselineDone: true, seen: ['1'] } },
+      failStreak: 2,
+    }),
+    'utf8',
+  );
+
+  const loaded = await loadState(file);
+  assert.deepEqual(loaded.state.sites, {});
+  assert.equal(loaded.state.posts['123'].baselineDone, true);
+  assert.equal(loaded.state.failStreak, 2);
+});
+
+test('站点状态的数组与错误字段会被归一化', async (t) => {
+  const dir = await tempDir(t);
+  const file = path.join(dir, 'state.json');
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      version: 2,
+      sites: {
+        'swpu-exams': { baselineDone: 1, seen: [1, '2'], lastError: 'boom', baselineCount: '3' },
+      },
+    }),
+    'utf8',
+  );
+
+  const loaded = await loadState(file);
+  const siteState = loaded.state.sites['swpu-exams'];
+  assert.equal(siteState.baselineDone, true);
+  assert.deepEqual(siteState.seen, ['1', '2']);
+  assert.equal(siteState.lastError, null);
+  assert.equal(siteState.baselineCount, null);
+});
+
+test('markSiteSeen 去重并限制保留数量', () => {
+  const siteState = { seen: ['a', 'b'] };
+  markSiteSeen(siteState, ['b', 'c', 'd'], 3);
+  assert.deepEqual(siteState.seen, ['b', 'c', 'd']);
+});
+

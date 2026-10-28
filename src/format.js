@@ -143,3 +143,105 @@ export function formatMessageChunks(post, comments, { maxChars = 200, postUrl, m
     };
   });
 }
+
+
+// ---------------------------------------------------------------- 通用站点（微博之外）
+
+const PLACEHOLDER = /\{(\w+)\}/g;
+
+/** 用变量替换模板里的 {name} 占位符；未知占位符原样保留，方便排错。 */
+export function fillTemplate(template, vars = {}) {
+  return String(template ?? '').replace(PLACEHOLDER, (match, key) =>
+    Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key] ?? '') : match,
+  );
+}
+
+/**
+ * 去掉行尾空白、合并连续空行、去掉首尾空行。
+ * stripBlank=true 时连中间的空行也去掉——条目模板里没填的占位符不该留下空行。
+ */
+export function tidyLines(text, { stripBlank = false } = {}) {
+  const lines = String(text ?? '').split('\n').map((line) => line.replace(/[ \t]+$/, ''));
+  const out = [];
+  for (const line of lines) {
+    if (line === '') {
+      if (stripBlank) continue;
+      if (out.length === 0 || out[out.length - 1] === '') continue;
+    }
+    out.push(line);
+  }
+  while (out.length > 0 && out[out.length - 1] === '') out.pop();
+  return out.join('\n');
+}
+
+/** 渲染单个条目。默认模板：序号 + 标题 + 时间 + 附加字段 + 链接。 */
+export function renderSiteItem(site, item, index, { maxChars = 200, maxFieldChars = 120 } = {}) {
+  const template = site?.message?.item || '{index}. {title}\n{time}\n{fields}\n{text}\n{link}';
+  const fieldsText = (item.fields || [])
+    .map((field) => `${field.label}：${truncateText(field.value, maxFieldChars)}`)
+    .join('\n');
+  const vars = {
+    index,
+    site: site?.name || '',
+    title: item.title || '(无标题)',
+    time: item.time || '',
+    link: item.link || '',
+    text: truncateText(item.text || '', maxChars),
+    fields: fieldsText,
+  };
+  return tidyLines(fillTemplate(template, vars), { stripBlank: true });
+}
+
+/**
+ * 把新增条目渲染成一条或多条推送。
+ * 分块依据：单个站点配置的 maxItemsPerMessage，以及单条消息的整体字数上限。
+ */
+export function formatSiteMessages(site, items, options = {}) {
+  const {
+    maxItemsPerMessage = 10,
+    maxChunkChars = 8000,
+    maxChars = 200,
+    maxFieldChars = 120,
+  } = options;
+
+  const name = site?.name || site?.id || '站点';
+  const headerBase = fillTemplate(site?.message?.header || '【{site}】新增 {count} 条', {
+    site: name,
+    count: items.length,
+  });
+
+  const blocks = items.map((item, index) => ({
+    item,
+    block: renderSiteItem(site, item, index + 1, { maxChars, maxFieldChars }),
+  }));
+
+  const limit = Math.max(1, Number(maxItemsPerMessage) || 10);
+  const groups = [];
+  let current = [];
+  let currentLength = headerBase.length;
+
+  for (const entry of blocks) {
+    const addition = entry.block.length + 2;
+    const overChars = current.length > 0 && currentLength + addition > maxChunkChars;
+    const overCount = current.length >= limit;
+    if (overChars || overCount) {
+      groups.push(current);
+      current = [];
+      currentLength = headerBase.length;
+    }
+    current.push(entry);
+    currentLength += addition;
+  }
+  if (current.length > 0) groups.push(current);
+
+  return groups.map((group, index) => {
+    const header = groups.length > 1 ? `${headerBase}（${index + 1}/${groups.length}）` : headerBase;
+    const content = `${header}\n\n${group.map((entry) => entry.block).join('\n\n')}`;
+    const summary = `${name} 新增 ${group.length} 条`.slice(0, 100);
+    return {
+      content,
+      itemIds: group.map((entry) => entry.item.id),
+      summary,
+    };
+  });
+}
