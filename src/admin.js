@@ -12,6 +12,7 @@ import { ConfigError, DEFAULT_CONFIG, getEnvConfig, normalizeConfig } from './co
 import { createLogger } from './logger.js';
 import { isProcessAlive } from './lock.js';
 import { installAutostart, removeAutostart, resolveLayout } from './cli.js';
+import { fetchDocument } from './http.js';
 import { sendWxPusher } from './notify.js';
 import { pollAll } from './poller.js';
 import { loadState } from './state.js';
@@ -696,6 +697,8 @@ async function apiDryRun(ctx) {
       saveState: async () => {},
       now: () => new Date(),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      cookieForSite: (site) => String(envFile.parsed?.[site.request.cookieEnv] || ''),
+      fetchDocumentImpl: fetchDocument,
     });
     return { ok: true, durationMs: Date.now() - startedAt, skipped: result.skipped || null, results: result.results, lines };
   } catch (err) {

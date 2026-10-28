@@ -70,8 +70,49 @@ Cookie 是账号凭证，只保存在本机 `.env` 文件里，不上传、不�
 | `WeiBoListener.exe --once` | 只检查一轮后退出 |
 | `WeiBoListener.exe --dry-run` | 只打印将要推送的内容，不写状态、不发送 |
 | `WeiBoListener.exe --test-push` | 只发一条 WxPusher 测试消息 |
+| `WeiBoListener.exe --test-site=ID` | 试抓一个通用站点：打印条目与推送示例，不写状态、不推送 |
 | `WeiBoListener.exe --help` | 查看全部参数 |
 
+## 监听其它网站（通用站点）
+
+微博之外，还能监听任意返回 JSON 的接口：教务的考试安排、成绩、通知公告，别的学校站点等等。一个站点 = `config.json` 里 `sites` 数组的一条配置，不改代码。
+
+**做法（以教务接口为例）**
+
+1. **找接口**：浏览器登录后按 F12 → Network → 刷新页面 → 找到返回 JSON 的那条请求，右键复制完整 URL。注意**保留查询参数**（例如 `?termCode=2026-2027-1`），去掉参数通常只会拿到 HTML 外壳。
+2. **写配置**：把 `config.example.json` 里的 `sites` 示例复制到自己的 `config.json`，改 `id`、`name`、`request.url`、`select` 这几处。字段含义见下表。
+3. **填 Cookie**：复制该请求的整行 Cookie，写进 `.env` 的 `SITE_<ID>_COOKIE`（键名和配置里的 `cookieEnv` 一致），例如：
+   ```
+   SITE_SWPU_EXAMS_COOKIE=NQwq88ht...; _WEU=...; route=...
+   ```
+4. **验证**：`node src/index.js --test-site swpu-exams`。只抓一次，打印状态码、条目和推送示例，**不写状态、不推送**。
+5. **重启监听**生效。首次运行只建立基线（把当前条目全部记为已见），不会把历史条目推一遍。
+
+**字段说明**
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 小写字母/数字/短横线，唯一；也用来派生 `SITE_<ID>_COOKIE` 键名 |
+| `mode` | 目前只支持 `json` |
+| `request.url` | 接口地址，必填，必须是 http/https |
+| `request.headers` | 额外请求头；默认已带 `User-Agent`、`Accept`、`Accept-Language: zh-CN` |
+| `request.cookieEnv` | Cookie 在 `.env` 里的键名，留空则按 ID 自动派生 |
+| `success` | 成功判定，例如 `{ "path": "code", "equals": "0", "messagePath": "msg" }`；不填只要求是 JSON |
+| `select.items` | 条目数组的路径，例如 `datas` 或 `data.list` |
+| `select.id` | 唯一 ID 字段（字符串即可，UUID 也行），用来去重 |
+| `select.title` / `time` / `link` / `text` | 推送里展示的字段，可以留空 |
+| `select.fields` | 额外展示字段，`[{ "path": "examPlace", "label": "考场" }]` |
+| `filters.includeKeywords` / `excludeKeywords` | 命中关键词的条目只保留 / 丢弃 |
+| `pollIntervalSec` | 该站点自己的轮询间隔；留空则跟随全局间隔 |
+| `message.header` / `item` | 推送模板，占位符 `{site} {count} {index} {title} {time} {link} {text} {fields}` |
+
+**注意事项**
+
+- 尽量不要覆盖 `Accept-Language`：不少教务系统看到它会返回中文（`课程结业考试`），不带则返回内部代码（`04`）。
+- Cookie 失效不一定报 401：常见表现是**返回 HTML 登录页**，或者**连接超时**。日志会直接说明是哪一种，按提示重新复制 Cookie 即可。
+- 学期切换后 URL 里的 `termCode` 会变：改一次配置，或者并存两条站点、停用旧的。
+- 面板暂时只编辑微博部分；站点配置目前通过 `config.json` 维护（从面板保存不会覆盖 `sites`）。
+- 站点抓取失败只影响自己：认证失败暂停 30 分钟并推送一次告警，限流退避 10 分钟。
 ## 开机自启
 
 `--install` 会注册一个登录时触发的计划任务：

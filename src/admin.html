@@ -673,6 +673,8 @@
       },
       stateFile: state.config?.stateFile || 'data/state.json',
       logDir: state.config?.logDir || 'logs',
+      // 面板暂不编辑通用站点（sites）；原样带回，避免保存时把它们删掉
+      sites: Array.isArray(state.config?.sites) ? state.config.sites : [],
     };
   }
 

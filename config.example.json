@@ -21,5 +21,59 @@
   ],
   "filters": {
     "excludeKeywords": []
-  }
+  },
+  "sites": [
+    {
+      "id": "example-exams",
+      "name": "示例站点（默认停用）",
+      "enabled": false,
+      "mode": "json",
+      "request": {
+        "url": "https://deanservices.example.edu.cn/jwapp/sys/homeapp/api/home/student/exams.do?termCode=2026-2027-1",
+        "method": "GET",
+        "headers": {
+          "Accept-Language": "zh-CN,zh;q=0.9"
+        },
+        "body": null,
+        "cookieEnv": "SITE_EXAMPLE_EXAMS_COOKIE",
+        "timeoutMs": 30000,
+        "encoding": "auto"
+      },
+      "success": {
+        "path": "code",
+        "equals": "0",
+        "messagePath": "msg"
+      },
+      "select": {
+        "items": "datas",
+        "id": "taskId",
+        "title": "courseName",
+        "time": "examTimeDescription",
+        "link": null,
+        "text": null,
+        "fields": [
+          {
+            "path": "examPlace",
+            "label": "考场"
+          },
+          {
+            "path": "examSeatNo",
+            "label": "座位"
+          }
+        ]
+      },
+      "filters": {
+        "includeKeywords": [],
+        "excludeKeywords": []
+      },
+      "pollIntervalSec": 1800,
+      "notifyOnBaseline": false,
+      "maxItems": 200,
+      "maxItemsPerMessage": 10,
+      "message": {
+        "header": "【{site}】新增 {count} 条",
+        "item": "{index}. {title}\\n{time}\\n{fields}"
+      }
+    }
+  ]
 }

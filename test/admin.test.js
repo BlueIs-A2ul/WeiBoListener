@@ -171,6 +171,47 @@ test('POST /api/config 非法内容不落盘，合法内容写入归一化结果
   });
 });
 
+
+test('POST /api/config 会保留通用站点配置（面板不编辑也不能弄丢）', async () => {
+  await withServer(async ({ root, base }) => {
+    const siteConfig = {
+      id: 'swpu-exams',
+      name: '考试安排',
+      request: { url: 'https://deanservices.example.edu.cn/api/exams' },
+      select: { items: 'datas', id: 'taskId', title: 'courseName' },
+      pollIntervalSec: 1800,
+    };
+
+    const before = JSON.parse(await fs.readFile(path.join(root, 'config.json'), 'utf8'));
+    before.sites = [siteConfig];
+    await fs.writeFile(path.join(root, 'config.json'), JSON.stringify(before, null, 2), 'utf8');
+
+    const current = await call(base, '/api/config');
+    assert.equal(current.json.config.sites.length, 1);
+    assert.equal(current.json.config.sites[0].id, 'swpu-exams');
+    assert.equal(current.json.config.sites[0].request.cookieEnv, 'SITE_SWPU_EXAMS_COOKIE');
+
+    const saved = await call(base, '/api/config', {
+      method: 'POST',
+      body: {
+        config: {
+          pollIntervalSec: 900,
+          heartbeatHour: null,
+          posts: [{ id: '1234567890123456', name: '主微博' }],
+          sites: current.json.config.sites,
+        },
+        mtimeMs: current.json.mtimeMs,
+      },
+    });
+    assert.equal(saved.status, 200);
+
+    const onDisk = JSON.parse(await fs.readFile(path.join(root, 'config.json'), 'utf8'));
+    assert.equal(onDisk.pollIntervalSec, 900);
+    assert.equal(onDisk.sites.length, 1);
+    assert.equal(onDisk.sites[0].select.items, 'datas');
+  });
+});
+
 test('POST /api/config 用过期 mtime 时返回 409', async () => {
   await withServer(async ({ base }) => {
     const current = await call(base, '/api/config');
