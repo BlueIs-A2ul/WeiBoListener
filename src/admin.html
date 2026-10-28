@@ -161,8 +161,9 @@
   .gate p { color: var(--muted); font-size: 14px; }
   .gate code { font-family: var(--mono); background: var(--surface-2); padding: 2px 6px; border-radius: 5px; }
 
-  .toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+  .toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 50; pointer-events: none; }
   .toast {
+    pointer-events: auto;
     background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--muted);
     border-radius: 10px; padding: 11px 14px; font-size: 13.5px; box-shadow: 0 8px 24px rgba(0,0,0,.12);
     max-width: 380px; animation: slide .18s ease;
@@ -198,6 +199,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab" role="tab" data-tab="creds" aria-selected="true">凭据</button>
       <button class="tab" role="tab" data-tab="config" aria-selected="false">微博与轮询</button>
+      <button class="tab" role="tab" data-tab="sites" aria-selected="false">站点</button>
       <button class="tab" role="tab" data-tab="diag" aria-selected="false">诊断</button>
     </nav>
 
@@ -320,6 +322,21 @@
           <button class="btn primary" id="saveConfig">保存配置</button>
           <span class="muted">保存后自动重启监听生效</span>
         </div>
+      </section>
+
+      <!-- 通用站点 -->
+      <section class="panel" data-panel="sites">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>通用站点</h2>
+              <p class="hint">监听任意返回 JSON 的接口（教务考试、成绩、公告…）。粘贴请求地址和 Cookie，向导会自动识别条目数组与字段。</p>
+            </div>
+            <button class="btn primary small" id="addSite">+ 添加站点</button>
+          </div>
+          <div id="siteCards"><p class="hint">加载中…</p></div>
+        </div>
+        <div id="siteWizard" hidden></div>
       </section>
 
       <!-- 诊断 -->
@@ -712,6 +729,7 @@
     renderOverview();
     renderConfig();
     renderCredentials();
+    renderSites();
   }
 
   async function saveCredentials(event) {
@@ -913,6 +931,579 @@
     }
   }
 
+
+  // ---------------------------------------------------------------- 通用站点（向导）
+
+  const wizard = {
+    open: false,
+    draft: null,
+    headersText: '',
+    cookie: '',
+    error: '',
+    probe: null,
+    chosen: 0,
+    preview: null,
+  };
+
+  function blankDraft() {
+    return {
+      id: '',
+      name: '',
+      enabled: true,
+      mode: 'json',
+      request: {
+        url: '',
+        method: 'GET',
+        headers: { 'Accept-Language': 'zh-CN,zh;q=0.9' },
+        body: null,
+        cookieEnv: '',
+        timeoutMs: 30000,
+        encoding: 'auto',
+      },
+      success: null,
+      select: { items: '', id: '', title: '', time: '', link: '', text: '', fields: [] },
+      filters: { includeKeywords: [], excludeKeywords: [] },
+      pollIntervalSec: 1800,
+      notifyOnBaseline: false,
+      maxItems: 200,
+      maxItemsPerMessage: 10,
+      message: { header: null, item: null },
+    };
+  }
+
+  function headerTextToObject(text) {
+    const headers = {};
+    for (const line of String(text || '').split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const index = trimmed.indexOf(':');
+      if (index <= 0) continue;
+      headers[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
+    }
+    return headers;
+  }
+
+  function cookieKeyFor(id) {
+    const slug = String(id || 'site').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return 'SITE_' + (slug || 'SITE') + '_COOKIE';
+  }
+
+  function draftForServer() {
+    const draft = wizard.draft;
+    const id = String(draft.id || '').trim();
+    return {
+      ...draft,
+      id,
+      name: String(draft.name || '').trim() || id,
+      request: { ...draft.request, headers: headerTextToObject(wizard.headersText), cookieEnv: cookieKeyFor(id) },
+    };
+  }
+
+  function guessFields(keys) {
+    const pick = (patterns) => (keys || []).find((key) => patterns.some((re) => re.test(key))) || '';
+    return {
+      id: pick([/^id$/i, /idstr$/i, /_id$/i, /taskid/i, /^uuid$/i]),
+      title: pick([/^title$/i, /title/i, /^name$/i, /name$/i, /subject/i, /coursename/i]),
+      time: pick([/time/i, /date/i]),
+      link: pick([/^url$/i, /url$/i, /^link$/i, /href/i]),
+      text: pick([/^content$/i, /^text$/i, /^summary$/i, /^desc/i]),
+    };
+  }
+
+  function applyCandidate(index) {
+    const candidate = wizard.probe?.analysis?.candidates?.[index];
+    if (!candidate) return;
+    wizard.chosen = index;
+    wizard.draft.select.items = candidate.path;
+    const guessed = guessFields(candidate.keys);
+    wizard.draft.select.id = guessed.id;
+    wizard.draft.select.title = guessed.title;
+    wizard.draft.select.time = guessed.time;
+    wizard.draft.select.link = guessed.link;
+    wizard.draft.select.text = guessed.text;
+    wizard.draft.select.fields = [];
+  }
+
+  function formField(label, input, hint) {
+    const wrap = h('label', { class: 'field' }, label, input);
+    if (hint) wrap.append(h('span', { class: 'hint' }, hint));
+    return wrap;
+  }
+
+  function textArea(rows, value, oninput, placeholder, id) {
+    const node = h('textarea', { id: id || null, rows: String(rows), spellcheck: 'false', placeholder: placeholder || '', oninput });
+    node.value = value || '';
+    return node;
+  }
+
+  function roleSelect(role, labelText, keys) {
+    const value = wizard.draft.select[role] || '';
+    const options = [h('option', { value: '' }, '（不展示）')];
+    for (const key of keys) options.push(h('option', { value: key, selected: key === value }, key));
+    return formField(
+      labelText,
+      h('select', {
+        onchange: (event) => {
+          wizard.draft.select[role] = event.target.value;
+          pruneExtraFields();
+          renderWizard();
+        },
+      }, ...options),
+    );
+  }
+
+  function pruneExtraFields() {
+    const used = new Set(['id', 'title', 'time', 'link', 'text'].map((role) => wizard.draft.select[role]).filter(Boolean));
+    wizard.draft.select.fields = wizard.draft.select.fields.filter((field) => !used.has(field.path));
+  }
+
+  function extraFieldRows(keys) {
+    const used = new Set(['id', 'title', 'time', 'link', 'text'].map((role) => wizard.draft.select[role]).filter(Boolean));
+    const chosen = new Map(wizard.draft.select.fields.map((field) => [field.path, field]));
+    const rows = keys.filter((key) => !used.has(key)).map((key) => {
+      const active = chosen.get(key) || null;
+      const labelInput = h('input', {
+        type: 'text',
+        value: active ? active.label : key,
+        disabled: !active,
+        oninput: (event) => {
+          const field = wizard.draft.select.fields.find((item) => item.path === key);
+          if (field) field.label = event.target.value;
+        },
+      });
+      return h('div', { style: 'display:flex;align-items:center;gap:10px;margin:4px 0' },
+        h('label', { class: 'switch', style: 'padding-bottom:0;min-width:180px' },
+          h('input', {
+            type: 'checkbox',
+            checked: Boolean(active),
+            onchange: (event) => {
+              if (event.target.checked) wizard.draft.select.fields.push({ path: key, label: key });
+              else wizard.draft.select.fields = wizard.draft.select.fields.filter((item) => item.path !== key);
+              renderWizard();
+            },
+          }),
+          key),
+        labelInput,
+      );
+    });
+    return rows;
+  }
+
+  async function runProbe(button) {
+    const draft = wizard.draft;
+    wizard.error = '';
+    if (!String(draft.request.url || '').trim()) {
+      wizard.error = '请先填写请求地址';
+      renderWizard();
+      return;
+    }
+    setBusy(button, true, '抓取中…');
+    try {
+      const result = await api('/api/probe', {
+        method: 'POST',
+        body: {
+          url: String(draft.request.url).trim(),
+          method: draft.request.method,
+          headers: headerTextToObject(wizard.headersText),
+          cookie: wizard.cookie.trim(),
+          encoding: draft.request.encoding,
+        },
+      });
+      wizard.probe = result;
+      wizard.preview = null;
+      if (!result.ok) {
+        wizard.error = (result.authHint ? 'Cookie 可能失效或已过期：' : '') + result.message;
+      } else if (result.kind === 'json' && result.analysis) {
+        const suggested = result.analysis.suggestedSite;
+        if (!draft.id && suggested && suggested.id) draft.id = suggested.id;
+        if (!draft.name && suggested && suggested.id) draft.name = suggested.id;
+        if (!draft.success && result.analysis.success) draft.success = result.analysis.success;
+        if (!draft.select.items && suggested) draft.select = { ...suggested.select, fields: [] };
+      }
+      renderWizard();
+    } catch (error) {
+      wizard.error = error.message;
+      renderWizard();
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function runPreview(button) {
+    wizard.error = '';
+    try {
+      const site = draftForServer();
+      if (!site.select.items) throw new Error('请先选择条目数组');
+      if (!site.select.id) throw new Error('请选择唯一 ID 字段');
+      setBusy(button, true, '抓取中…');
+      const result = await api('/api/site/preview', { method: 'POST', body: { site, cookie: wizard.cookie.trim() } });
+      wizard.preview = result;
+      renderWizard();
+    } catch (error) {
+      wizard.error = error.message;
+      renderWizard();
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function runSave(button) {
+    wizard.error = '';
+    setBusy(button, true, '保存中…');
+    try {
+      const site = draftForServer();
+      const result = await api('/api/sites', {
+        method: 'POST',
+        body: { site, cookie: wizard.cookie.trim(), mtimeMs: state.configMtime },
+      });
+      state.config = result.config;
+      state.configMtime = result.mtimeMs;
+
+      let baselineNote = '';
+      try {
+        const baseline = await api('/api/site/baseline', { method: 'POST', body: { siteId: result.site.id } });
+        baselineNote = ' · 已建立基线 ' + baseline.count + ' 条';
+      } catch (error) {
+        baselineNote = ' · 基线将在监听下次启动时建立';
+      }
+
+      wizard.open = false;
+      wizard.draft = null;
+      wizard.probe = null;
+      wizard.preview = null;
+      renderWizard();
+      showBanner(
+        '站点已保存' + (result.cookieSaved ? '（Cookie 已写入 .env）' : '') + baselineNote + ' · ' + restartText(result.restart),
+        result.restart && result.restart.ok ? 'ok' : 'warn',
+      );
+      toast('站点已保存');
+      await loadAll();
+    } catch (error) {
+      wizard.error = error.message;
+      renderWizard();
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  function renderWizard() {
+    const box = $('#siteWizard');
+    if (!wizard.open || !wizard.draft) {
+      box.hidden = true;
+      box.replaceChildren();
+      return;
+    }
+    box.hidden = false;
+
+    const draft = wizard.draft;
+    const nodes = [];
+
+    nodes.push(h('div', { class: 'card' },
+      h('div', { class: 'card-head' },
+        h('div', {},
+          h('h2', {}, '① 填请求'),
+          h('p', { class: 'hint' }, '浏览器登录后按 F12 → Network → 找到返回 JSON 的那条请求，复制完整地址（带 ?termCode=…）和整行 Cookie')),
+        h('button', {
+          class: 'btn small ghost',
+          type: 'button',
+          onclick: () => {
+            wizard.open = false;
+            wizard.draft = null;
+            wizard.probe = null;
+            wizard.preview = null;
+            wizard.error = '';
+            renderWizard();
+          },
+        }, '关闭'),
+      ),
+      h('div', { class: 'grid two' },
+        formField('名称', h('input', {
+          id: 'wz-name',
+          type: 'text',
+          value: draft.name,
+          placeholder: '例如 考试安排（2026-2027-1）',
+          oninput: (event) => { draft.name = event.target.value; },
+        })),
+        formField('站点 ID', h('input', {
+          id: 'wz-id',
+          type: 'text',
+          class: 'mono',
+          value: draft.id,
+          placeholder: '小写字母/数字/短横线',
+          oninput: (event) => { draft.id = event.target.value.trim(); },
+        })),
+      ),
+      formField('请求地址', h('input', {
+        id: 'wz-url',
+        type: 'text',
+        class: 'mono',
+        value: draft.request.url,
+        placeholder: 'https://…/exams.do?termCode=2026-2027-1',
+        oninput: (event) => { draft.request.url = event.target.value; },
+      })),
+      h('div', { class: 'grid two' },
+        formField('方法', h('select', { id: 'wz-method', onchange: (event) => { draft.request.method = event.target.value; } },
+          h('option', { value: 'GET', selected: draft.request.method === 'GET' }, 'GET'),
+          h('option', { value: 'POST', selected: draft.request.method === 'POST' }, 'POST'))),
+        formField('编码', h('select', { id: 'wz-encoding', onchange: (event) => { draft.request.encoding = event.target.value; } },
+          h('option', { value: 'auto', selected: draft.request.encoding === 'auto' }, '自动识别'),
+          h('option', { value: 'utf-8', selected: draft.request.encoding === 'utf-8' }, 'UTF-8'),
+          h('option', { value: 'gbk', selected: draft.request.encoding === 'gbk' }, 'GBK'))),
+      ),
+      formField('请求头（每行 Key: Value）', textArea(2, wizard.headersText, (event) => { wizard.headersText = event.target.value; }, '', 'wz-headers')),
+      formField('Cookie（可留空；保存时写进 .env，不会显示在配置里）',
+        textArea(3, wizard.cookie, (event) => { wizard.cookie = event.target.value; }, '整行复制，注意分号后面的字段也别漏', 'wz-cookie')),
+      h('div', { class: 'actions', style: 'margin-bottom:0' },
+        h('button', { id: 'wz-probe', class: 'btn primary', type: 'button', onclick: (event) => runProbe(event.currentTarget) }, '② 抓取并分析'),
+      ),
+    ));
+
+    if (wizard.error) {
+      nodes.push(h('div', { class: 'banner', style: 'background:var(--danger-soft);color:var(--danger)' }, wizard.error));
+    }
+
+    const probe = wizard.probe;
+    if (probe) {
+      const doc = probe.doc || {};
+      const parts = [
+        h('h2', {}, '抓取结果'),
+        h('p', { class: 'hint' },
+          'HTTP ' + (doc.status === undefined ? '—' : doc.status) + ' · ' + (doc.contentType || '未知类型')
+          + ' · ' + (doc.bytes === undefined ? '—' : doc.bytes) + ' 字节 · ' + (doc.ms === undefined ? '—' : doc.ms) + 'ms'
+          + ' · 编码 ' + (doc.encoding || '—')),
+      ];
+      for (const warning of probe.warnings || []) {
+        parts.push(h('p', { class: 'hint', style: 'color:var(--warn)' }, warning));
+      }
+      if (!probe.ok && probe.message) {
+        parts.push(h('p', { class: 'hint', style: 'color:var(--danger)' }, probe.message));
+      }
+      if (probe.kind === 'html' && probe.textSample) {
+        parts.push(h('pre', { class: 'logs' }, probe.textSample));
+      }
+      nodes.push(h('div', { class: 'card' }, ...parts));
+    }
+
+    if (probe && probe.ok && probe.kind === 'json' && probe.analysis) {
+      const analysis = probe.analysis;
+      const candidates = analysis.candidates || [];
+      const current = candidates[wizard.chosen] || candidates[0] || { keys: [], sample: [] };
+      const keys = current.keys || [];
+      const successLine = analysis.success
+        ? ' · 成功判定 ' + analysis.success.path + '=' + analysis.success.equals
+        : '';
+
+      nodes.push(h('div', { class: 'card' },
+        h('h2', {}, '③ 选条目与字段'),
+        h('p', { class: 'hint' }, '顶层字段：' + ((analysis.topLevelKeys || []).join(' / ') || '（无）') + successLine),
+        h('div', { class: 'actions', style: 'margin:10px 0' },
+          ...candidates.map((candidate, index) => h('button', {
+            class: 'btn small' + (index === wizard.chosen ? ' primary' : ''),
+            type: 'button',
+            onclick: () => { applyCandidate(index); renderWizard(); },
+          }, candidate.path + ' · ' + candidate.count + ' 条')),
+        ),
+        h('pre', { class: 'logs' }, JSON.stringify(current.sample || [], null, 2)),
+        h('div', { class: 'grid two', style: 'margin-top:14px' },
+          roleSelect('id', '唯一 ID（必填）', keys),
+          roleSelect('title', '标题', keys),
+          roleSelect('time', '时间', keys),
+          roleSelect('link', '链接', keys),
+          roleSelect('text', '正文', keys),
+        ),
+        h('div', { style: 'margin-top:14px' },
+          h('p', { class: 'hint' }, '附加字段（可选，展示在推送文案里）'),
+          ...extraFieldRows(keys),
+        ),
+        h('div', { class: 'actions' },
+          h('button', { id: 'wz-preview', class: 'btn', type: 'button', onclick: (event) => runPreview(event.currentTarget) }, '④ 预览推送'),
+          h('button', { id: 'wz-save', class: 'btn primary', type: 'button', onclick: (event) => runSave(event.currentTarget) }, '保存并建立基线'),
+        ),
+        h('p', { class: 'hint' }, '保存后会重启监听；首次运行只把当前条目记为基线，不会把历史条目推一遍。'),
+      ));
+    }
+
+    if (wizard.preview) {
+      const preview = wizard.preview;
+      nodes.push(h('div', { class: 'card' },
+        h('h2', {}, '推送预览'),
+        h('p', { class: 'hint' }, '共 ' + preview.total + ' 条；下面是手机上会收到的文案（每条消息最多 ' + (wizard.draft?.maxItemsPerMessage || 10) + ' 条）'),
+        h('pre', { class: 'logs' }, preview.messages.join('\n\n———\n\n') || '（没有条目）'),
+      ));
+    }
+
+    box.replaceChildren(...nodes);
+  }
+
+  // ---------------------------------------------------------------- 站点卡片
+
+  function renderSites() {
+    const container = $('#siteCards');
+    const sites = state.overview?.sites || [];
+    if (sites.length === 0) {
+      container.replaceChildren(h('p', { class: 'hint' }, '还没有站点。点右上角「+ 添加站点」，粘贴请求地址和 Cookie 即可。'));
+      return;
+    }
+    container.replaceChildren(...sites.map(siteCard));
+  }
+
+  function siteCard(site) {
+    const card = h('div', { class: 'card', style: 'margin-bottom:12px' },
+      h('div', { class: 'card-head' },
+        h('div', {},
+          h('h2', {}, site.name, ' ', h('span', { class: 'badge' }, site.id)),
+          h('p', { class: 'hint mono' }, site.url || '（不在 config.json 里）'),
+        ),
+        h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' },
+          h('span', { class: 'badge ' + (site.enabled ? 'ok' : '') }, site.enabled ? '启用' : '停用'),
+          h('span', { class: 'badge ' + (site.baselineDone ? 'ok' : 'warn') },
+            site.baselineDone ? '已见 ' + site.seenCount : '未建基线'),
+          site.authPausedUntil ? h('span', { class: 'badge danger' }, 'Cookie 失效暂停中') : null,
+          site.lastError ? h('span', { class: 'badge danger' }, String(site.lastError.message).slice(0, 36)) : null,
+        ),
+      ),
+      h('div', { class: 'statusline' },
+        h('span', { class: 'muted' }, '最后抓取：' + fmtTime(site.lastPollAt)),
+        h('span', { class: 'muted' }, '最近推送：' + fmtTime(site.lastPushAt)),
+        site.pollIntervalSec ? h('span', { class: 'muted' }, '间隔 ' + site.pollIntervalSec + ' 秒') : null,
+        site.cookieEnv ? h('span', { class: 'muted mono' }, site.cookieEnv) : null,
+      ),
+      h('div', { class: 'actions', style: 'margin:12px 0 0' },
+        h('button', { class: 'btn small', type: 'button', onclick: (event) => runSiteTest(event.currentTarget, site) }, '试跑'),
+        h('button', { class: 'btn small ghost', type: 'button', onclick: (event) => runSiteBaseline(event.currentTarget, site) }, '重建基线'),
+        h('button', {
+          class: 'btn small ghost',
+          type: 'button',
+          onclick: () => { state.openCookieSite = state.openCookieSite === site.id ? null : site.id; renderSites(); },
+        }, '换 Cookie'),
+        h('button', { class: 'btn small ghost', type: 'button', onclick: (event) => toggleSite(event.currentTarget, site) },
+          site.enabled ? '停用' : '启用'),
+        h('button', { class: 'btn small danger', type: 'button', onclick: (event) => removeSite(event.currentTarget, site) }, '删除'),
+      ),
+    );
+
+    if (state.openCookieSite === site.id) card.append(siteCookieEditor(site));
+
+    const result = state.siteResult && state.siteResult.siteId === site.id ? state.siteResult.data : null;
+    if (result) card.append(siteResultBlock(result));
+
+    return card;
+  }
+
+  function siteResultBlock(data) {
+    const doc = data.doc || {};
+    return h('div', { style: 'margin-top:12px' },
+      h('p', { class: 'hint' },
+        'HTTP ' + (doc.status ?? '—') + ' · ' + (doc.contentType || '未知') + ' · ' + (doc.bytes ?? '—') + ' 字节 · '
+        + (doc.ms ?? '—') + 'ms · 共 ' + data.total + ' 条（下面只显示文案，不会推送）'),
+      h('pre', { class: 'logs' }, (data.messages || []).join('\n\n———\n\n') || '（没有条目）'),
+    );
+  }
+
+  function siteCookieEditor(site) {
+    const input = textArea(3, '', null, '粘贴该站点的整行 Cookie');
+    return h('div', { style: 'margin-top:12px' },
+      h('p', { class: 'hint' }, '保存到 .env 的 ' + (site.cookieEnv || '（站点未配置 cookieEnv，请先保存站点）')),
+      input,
+      h('div', { class: 'actions', style: 'margin:8px 0 0' },
+        h('button', {
+          class: 'btn primary small',
+          type: 'button',
+          onclick: async (event) => {
+            const cookie = input.value.trim();
+            if (!cookie) { toast('请先粘贴 Cookie', 'warn'); return; }
+            setBusy(event.currentTarget, true, '保存中…');
+            try {
+              const result = await api('/api/sites', {
+                method: 'POST',
+                body: { site: { id: site.id }, cookie, mtimeMs: state.configMtime },
+              });
+              state.configMtime = result.mtimeMs;
+              state.openCookieSite = null;
+              toast('Cookie 已保存');
+              showBanner('Cookie 已写入 .env · ' + restartText(result.restart), result.restart && result.restart.ok ? 'ok' : 'warn');
+              await loadAll();
+            } catch (error) {
+              toast(error.message, 'error');
+            } finally {
+              setBusy(event.currentTarget, false);
+            }
+          },
+        }, '保存 Cookie'),
+        h('button', {
+          class: 'btn small ghost',
+          type: 'button',
+          onclick: () => { state.openCookieSite = null; renderSites(); },
+        }, '取消'),
+      ),
+    );
+  }
+
+  async function runSiteTest(button, site) {
+    setBusy(button, true, '抓取中…');
+    try {
+      const result = await api('/api/site/test', { method: 'POST', body: { siteId: site.id } });
+      state.siteResult = { siteId: site.id, data: result };
+      renderSites();
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function runSiteBaseline(button, site) {
+    if (!window.confirm('把当前抓到的条目全部记为已见（之后只推送新增）？')) return;
+    setBusy(button, true, '处理中…');
+    try {
+      const result = await api('/api/site/baseline', { method: 'POST', body: { siteId: site.id } });
+      toast('已建立基线：' + result.count + ' 条');
+      await loadOverview();
+      renderSites();
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function toggleSite(button, site) {
+    setBusy(button, true, '保存中…');
+    try {
+      const result = await api('/api/sites', {
+        method: 'POST',
+        body: { site: { id: site.id, enabled: !site.enabled }, mtimeMs: state.configMtime },
+      });
+      state.configMtime = result.mtimeMs;
+      toast(site.enabled ? '已停用' : '已启用');
+      showBanner('站点已更新 · ' + restartText(result.restart), result.restart && result.restart.ok ? 'ok' : 'warn');
+      await loadAll();
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  async function removeSite(button, site) {
+    if (!window.confirm('删除站点「' + site.name + '」？保留的 .env Cookie 不会自动清理。')) return;
+    setBusy(button, true, '删除中…');
+    try {
+      const result = await api('/api/sites/delete', {
+        method: 'POST',
+        body: { siteId: site.id, mtimeMs: state.configMtime },
+      });
+      state.configMtime = result.mtimeMs;
+      toast('已删除');
+      showBanner('站点已删除 · ' + restartText(result.restart), result.restart && result.restart.ok ? 'ok' : 'warn');
+      await loadAll();
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
   function bindTabs() {
     $$('.tab').forEach((tab) => {
       tab.addEventListener('click', () => {
@@ -953,6 +1544,19 @@
       if (placeholder) placeholder.remove();
       container.append(postRow({ enabled: true }));
     });
+    $('#addSite').addEventListener('click', () => {
+      wizard.draft = blankDraft();
+      wizard.headersText = 'Accept-Language: zh-CN,zh;q=0.9';
+      wizard.cookie = '';
+      wizard.probe = null;
+      wizard.preview = null;
+      wizard.error = '';
+      wizard.chosen = 0;
+      wizard.open = true;
+      renderWizard();
+      $('#siteWizard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+
     $('#heartbeatEnabled').addEventListener('change', (event) => {
       $('#heartbeatHour').disabled = !event.target.checked;
     });

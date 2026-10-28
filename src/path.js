@@ -22,8 +22,9 @@ export function parsePath(path) {
   return tokens.filter((token) => token !== '');
 }
 
-/** 按路径取值；任一段缺失返回 undefined，不抛错。 */
+/** 按路径取值；任一段缺失返回 undefined，不抛错。path 为 "$" 时返回根对象本身。 */
 export function getPath(value, path) {
+  if (path === '$') return value;
   const tokens = Array.isArray(path) ? path : parsePath(path);
   let current = value;
 

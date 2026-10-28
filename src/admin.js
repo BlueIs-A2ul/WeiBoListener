@@ -15,6 +15,14 @@ import { installAutostart, removeAutostart, resolveLayout } from './cli.js';
 import { fetchDocument } from './http.js';
 import { sendWxPusher } from './notify.js';
 import { pollAll } from './poller.js';
+import {
+  baseline as siteBaseline,
+  deleteSite,
+  preview as sitePreview,
+  probe as siteProbe,
+  saveSite,
+  testSite,
+} from './siteadmin.js';
 import { loadState } from './state.js';
 import { fetchApprovalPage, parseCookieExpiry } from './weibo.js';
 import { run } from './win.js';
@@ -420,6 +428,61 @@ function normalizePosts(config, state) {
   return posts;
 }
 
+function normalizeSites(config, state) {
+  const sites = [];
+  const seen = new Set();
+
+  const build = (id, siteState, extra) => ({
+    id: String(id),
+    name: extra.name,
+    enabled: extra.enabled,
+    mode: extra.mode,
+    url: extra.url,
+    cookieEnv: extra.cookieEnv,
+    pollIntervalSec: extra.pollIntervalSec,
+    inConfig: extra.inConfig,
+    baselineDone: Boolean(siteState?.baselineDone),
+    baselineCount: siteState?.baselineCount ?? null,
+    seenCount: Array.isArray(siteState?.seen) ? siteState.seen.length : 0,
+    lastPollAt: siteState?.lastPollAt ?? null,
+    lastPushAt: siteState?.lastPushAt ?? null,
+    authPausedUntil: siteState?.authPausedUntil ?? null,
+    lastError: siteState?.lastError ?? null,
+  });
+
+  for (const site of config?.sites || []) {
+    seen.add(String(site.id));
+    sites.push(
+      build(site.id, state?.sites?.[String(site.id)] || null, {
+        name: site.name,
+        enabled: site.enabled,
+        mode: site.mode,
+        url: site.request?.url || null,
+        cookieEnv: site.request?.cookieEnv || null,
+        pollIntervalSec: site.pollIntervalSec ?? null,
+        inConfig: true,
+      }),
+    );
+  }
+
+  for (const [id, siteState] of Object.entries(state?.sites || {})) {
+    if (seen.has(String(id))) continue;
+    sites.push(
+      build(id, siteState, {
+        name: `已移除的站点 ${id}`,
+        enabled: false,
+        mode: null,
+        url: null,
+        cookieEnv: null,
+        pollIntervalSec: null,
+        inConfig: false,
+      }),
+    );
+  }
+
+  return sites;
+}
+
 async function readStateSafe(root, config) {
   const stateFile = path.resolve(root, config?.stateFile || 'data/state.json');
   try {
@@ -485,6 +548,7 @@ async function apiOverview(ctx) {
       file: path.relative(ctx.root, path.resolve(ctx.root, configFile.config?.stateFile || 'data/state.json')),
       posts: normalizePosts(configFile.config, state),
     },
+    sites: normalizeSites(configFile.config, state),
     now: new Date().toISOString(),
   };
 }
@@ -820,6 +884,13 @@ const ROUTES = {
   'POST /api/restart': (ctx) => apiRestart(ctx),
   'POST /api/task/install': (ctx) => apiTaskInstall(ctx),
   'POST /api/task/uninstall': (ctx) => apiTaskUninstall(ctx),
+  // 通用站点（面板向导）
+  'POST /api/probe': (ctx, req) => siteProbe(ctx, req),
+  'POST /api/site/preview': (ctx, req) => sitePreview(ctx, req),
+  'POST /api/site/test': (ctx, req) => testSite(ctx, req),
+  'POST /api/sites': (ctx, req) => saveSite(ctx, req),
+  'POST /api/sites/delete': (ctx, req) => deleteSite(ctx, req),
+  'POST /api/site/baseline': (ctx, req) => siteBaseline(ctx, req),
 };
 
 export function createAdminServer({ root = DEFAULT_ROOT, token, htmlPath, autoRestart = true } = {}) {
@@ -889,10 +960,24 @@ export function createAdminServer({ root = DEFAULT_ROOT, token, htmlPath, autoRe
         return;
       }
 
-      const payload = await handler({ root, restartListener: restartListenerFor }, req, url);
+      const payload = await handler(
+        {
+          root,
+          restartListener: restartListenerFor,
+          readJson,
+          readEnvFile,
+          readConfigFile,
+          readConfigSafe,
+          writeFileAtomic,
+          assertMtime,
+          updateEnvText,
+        },
+        req,
+        url,
+      );
       sendJson(res, 200, payload);
     } catch (err) {
-      const status = err instanceof HttpError ? err.status : 500;
+      const status = err instanceof HttpError ? err.status : Number.isInteger(err?.status) ? err.status : 500;
       if (status >= 500) console.error('[admin] 请求处理失败', err);
       sendJson(res, status, { ok: false, error: { message: err.message || '服务器内部错误' } });
     }
