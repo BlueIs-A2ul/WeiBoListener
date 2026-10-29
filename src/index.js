@@ -311,6 +311,18 @@ async function main() {
     state.backoffUntil = null;
   }
 
+  // 站点级暂停同理：Cookie 常常是在停服期间换掉的，不清掉的话重启后还要空等 30 分钟
+  const pausedSites = Object.values(state.sites || {}).filter(
+    (siteState) => siteState.authPausedUntil || siteState.backoffUntil,
+  );
+  if (pausedSites.length > 0) {
+    logger.info(`启动时清除 ${pausedSites.length} 个站点的暂停/退避状态`);
+    for (const siteState of pausedSites) {
+      siteState.authPausedUntil = null;
+      siteState.backoffUntil = null;
+    }
+  }
+
   let releaseLock = () => {};
   if (!args.dryRun) {
     try {
