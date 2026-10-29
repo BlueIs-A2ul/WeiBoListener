@@ -10,8 +10,9 @@
  *   HTTP_SERVER      5xx
  *   HTTP_STATUS      其它非 2xx
  *   HTTP_TIMEOUT     超时（本机实测：某些教务系统在 Cookie 缺失时表现为连接超时）
- *   HTTP_NETWORK     网络错误
+ *   HTTP_NETWORK     网络错误（跳转之后失败时，消息里会带上跳转后的地址）
  *   HTTP_URL         配置里的地址不是 http/https
+ *   HTTP_REDIRECT    跳转次数过多 / 跳转目标不合法
  *   HTTP_TOO_LARGE   响应超过上限
  */
 
@@ -130,6 +131,35 @@ function assertHttpUrl(url) {
   return parsed;
 }
 
+/** 最多跟几次跳转。数据接口正常不该跳这么多次，超过基本就是被反复踢回登录。 */
+export const MAX_REDIRECTS = 5;
+
+/** 解析 Location，并确认跳过去还是 http/https（避免跳到 javascript: 之类）。 */
+export function resolveRedirectUrl(location, baseUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(location ?? ''), baseUrl);
+  } catch {
+    throw new FetchError(`跳转目标不是合法地址：${location}`, { code: 'HTTP_REDIRECT', retryable: false });
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new FetchError(`跳转目标不是 http/https 地址：${parsed.toString()}`, {
+      code: 'HTTP_REDIRECT',
+      retryable: false,
+    });
+  }
+  return parsed.toString();
+}
+
+/** 丢掉不需要的响应体，避免连接一直挂着不释放。 */
+async function discardBody(response) {
+  try {
+    await response?.body?.cancel?.();
+  } catch {
+    // 取消失败不影响主流程
+  }
+}
+
 /**
  * 发一次请求并解码成文本。
  * 返回值里的 status/bytes/ms 会直接展示在面板的「抓取并分析」里，方便用户判断网站是否正常。
@@ -150,28 +180,87 @@ export async function fetchDocument({
   const requestHeaders = mergeHeaders(headers);
   if (cookie) requestHeaders.cookie = String(cookie);
 
+  // 自己跟跳转，不用 redirect:'follow'。原因见 MAX_REDIRECTS 处的注释。
+  const deadline = startedAt + Number(timeoutMs > 0 ? timeoutMs : 15000);
+  let currentUrl = target.toString();
+  let currentMethod = String(method || 'GET').toUpperCase();
+  let currentBody = body === undefined || body === null || body === '' ? undefined : String(body);
+  let redirects = 0;
   let response;
-  try {
-    response = await fetchImpl(target.toString(), {
-      method: String(method || 'GET').toUpperCase(),
-      redirect: 'follow',
-      headers: requestHeaders,
-      body: body === undefined || body === null || body === '' ? undefined : String(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (err) {
-    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
       throw new FetchError(
         `请求超时（${timeoutMs}ms）。若该站点 Cookie 已过期或缺失，可能表现为超时而不是 401，请重新复制 Cookie 后重试。`,
         { code: 'HTTP_TIMEOUT' },
       );
     }
-    const cause = err?.cause?.code || err?.cause?.message || '';
-    throw new FetchError(`请求失败：${err?.message || err}${cause ? `（${cause}）` : ''}`, { code: 'HTTP_NETWORK' });
+
+    try {
+      response = await fetchImpl(currentUrl, {
+        method: currentMethod,
+        redirect: 'manual',
+        headers: requestHeaders,
+        body: currentBody,
+        signal: AbortSignal.timeout(remaining),
+      });
+    } catch (err) {
+      if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+        throw new FetchError(
+          `请求超时（${timeoutMs}ms）。若该站点 Cookie 已过期或缺失，可能表现为超时而不是 401，请重新复制 Cookie 后重试。`,
+          { code: 'HTTP_TIMEOUT' },
+        );
+      }
+      const cause = err?.cause?.code || err?.cause?.message || '';
+      // 跳转过之后的失败要说清是哪个地址失败，否则排查时完全看不出来
+      const where = redirects > 0 ? `（跳转后地址 ${currentUrl}）` : '';
+      throw new FetchError(`请求失败：${err?.message || err}${cause ? `（${cause}）` : ''}${where}`, {
+        code: 'HTTP_NETWORK',
+      });
+    }
+
+    const location = response.headers?.get?.('location');
+    if (!(response.status >= 300 && response.status < 400) || !location) break;
+
+    const nextUrl = resolveRedirectUrl(location, currentUrl);
+
+    // 关键：Cookie 失效时教务系统会 302 到登录页，而那个登录页常在 http(80) 上，
+    // 本机/校园网只放通 443，于是 follow 进登录页会变成「连接超时」，
+    // 最终以 HTTP_NETWORK 报出来，把「Cookie 过期」误报成「网络故障」。
+    // 所以这里在跟跳转之前就用地址判定，直接把 3xx→登录页 归成 HTTP_AUTH。
+    if (isLoginUrl(nextUrl)) {
+      await discardBody(response);
+      throw new FetchError(`被重定向到登录页（${nextUrl}），Cookie 很可能已失效`, {
+        code: 'HTTP_AUTH',
+        status: response.status,
+        retryable: false,
+      });
+    }
+
+    await discardBody(response);
+    redirects += 1;
+    if (redirects > MAX_REDIRECTS) {
+      throw new FetchError(`跳转次数过多（超过 ${MAX_REDIRECTS} 次），最后跳到 ${nextUrl}`, {
+        code: 'HTTP_REDIRECT',
+        status: response.status,
+        retryable: false,
+      });
+    }
+
+    // 303 一律改成 GET；301/302 按浏览器惯例把 POST 降级成 GET，307/308 保留原样
+    if (
+      response.status === 303 ||
+      ((response.status === 301 || response.status === 302) && currentMethod !== 'GET' && currentMethod !== 'HEAD')
+    ) {
+      currentMethod = 'GET';
+      currentBody = undefined;
+    }
+    currentUrl = nextUrl;
   }
 
-  const finalUrl = response.url || target.toString();
-  if (isLoginUrl(finalUrl) && finalUrl !== target.toString()) {
+  const finalUrl = response.url || currentUrl;
+  if (redirects === 0 && isLoginUrl(finalUrl) && finalUrl !== target.toString()) {
     throw new FetchError(`被重定向到登录页（${finalUrl}），Cookie 很可能已失效`, {
       code: 'HTTP_AUTH',
       status: response.status,
@@ -214,7 +303,7 @@ export async function fetchDocument({
   return {
     status: response.status,
     finalUrl,
-    redirected: Boolean(response.redirected),
+    redirected: redirects > 0,
     contentType,
     encoding: decoded.encoding,
     text: decoded.text,
