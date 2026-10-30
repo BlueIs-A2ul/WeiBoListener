@@ -187,6 +187,17 @@ npm run admin                         # 配置面板
 
 配置说明：`config.json` 保存微博列表、轮询间隔、过滤规则（示例见 [config.example.json](config.example.json)）；`.env` 保存 Cookie 与 WxPusher 密钥。两个文件都在本机，不要提交或分享。
 
+## 部署到 Linux 服务器（Debian 等）
+
+两条路，按需选：
+
+- **Docker（推荐）**：仓库自带 [docker-compose.yml](docker-compose.yml)，不需要 Dockerfile、不需要改一行代码，`docker compose up -d` 即可；更新 = 拉代码 + 重启容器，不重建镜像。
+- **systemd 原生**：不想装 Docker 就用 [deploy/](deploy/)，一条命令装成系统服务。
+
+完整步骤、验证命令与已知的坑见 [docs/debian-deploy.md](docs/debian-deploy.md)。
+
+> 开机自启的 `--install` 只支持 Windows（走 schtasks）。Linux 上由 Docker 的 `restart: unless-stopped` 或 systemd 负责，不要再执行 `--install`。
+
 ## 打包（开发者）
 
 ```powershell
