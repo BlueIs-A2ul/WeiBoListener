@@ -1,0 +1,67 @@
+# 微博待审评论监听 —— Docker 部署
+#
+# 设计要点：
+#   * 不构建镜像：项目零第三方依赖，直接用官方 node 镜像跑 src/index.js。
+#   * 挂载整个项目目录到 /app：程序的根目录由代码位置推导，
+#     .env / config.json / data / logs 都在 <项目根> 下。
+#     （不能只挂单个文件：admin.js 先写临时文件再 rename 做原子写，
+#       在单文件 bind mount 上 rename 会 EBUSY，面板保存会失败。）
+#   * 更新 = git pull + docker compose restart listener，不重建镜像、不下载镜像。
+#
+# 常用命令：
+#   docker compose up -d                 启动监听
+#   docker compose logs -f listener      跟踪日志
+#   docker compose restart listener      重载配置
+#   docker compose down                  停止
+
+services:
+  listener:
+    image: node:22-bookworm-slim
+    container_name: weibo-listener
+    working_dir: /app
+    command: ["node", "src/index.js"]
+    # 等价于 Windows 计划任务：开机自启 + 崩溃后拉起（前提是 docker 服务开机启动）
+    restart: unless-stopped
+    # 让 node 成为 SIGTERM 的正规接收者，docker stop 时能清掉 data/.lock
+    init: true
+    stop_grace_period: 20s
+    # 刻意不给 listener 加 pid: host：加了之后 data/.lock 里记的是宿主 PID，
+    # 一旦容器被 kill -9 留下残留锁，那个 PID 很容易和宿主上某个活着的进程（尤其内核线程）
+    # 撞号，kill(pid, 0) 返回 EPERM → 程序认为「已有实例在运行」→ 拒绝启动 → 重启循环。
+    # 实测踩到过（残留锁 PID 7 撞上宿主内核线程）。面板的「监听进程」状态在容器里本来就不可信，
+    # 判断监听是否在跑请用 docker compose ps。
+    # node 镜像里的 node 用户就是 1000:1000；保持宿主机文件归属正常
+    user: "1000:1000"
+    environment:
+      # 心跳小时、日志日期都用本地时间，务必设成你的时区
+      TZ: Asia/Shanghai
+    volumes:
+      - ./:/app
+    # 只出站访问 weibo.com / wxpusher，不需要暴露任何端口
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # 配置面板（可选）：docker compose --profile admin up -d admin
+  # 程序内部把监听地址写死成 127.0.0.1，所以这里用 host 网络，
+  # 面板就落在宿主机的 127.0.0.1:8787，用 SSH 隧道访问：
+  #   ssh -L 8787:127.0.0.1:8787 user@server
+  admin:
+    image: node:22-bookworm-slim
+    container_name: weibo-listener-admin
+    working_dir: /app
+    # --no-restart：容器里没有 systemctl，重启监听请用 docker compose restart listener
+    command: ["node", "src/admin.js", "--no-open", "--no-restart"]
+    profiles: ["admin"]
+    network_mode: host
+    # pid: host 让面板能读宿主 /proc，但 listener 用的是自己的 PID 命名空间，
+    # data/.lock 里记的是容器内 PID（实测 7）——所以面板的「监听进程」状态在容器里**不可信**，
+    # 判断监听是否在跑请用 docker compose ps。保留 pid: host 是为了面板的诊断页能读到宿主进程信息。
+    pid: host
+    user: "1000:1000"
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./:/app
